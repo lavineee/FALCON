@@ -3,9 +3,9 @@
 use_wandb: True
 
 wandb:
-  wandb_project: null
+  wandb_project: falcon
   wandb_tags: 'online' # 'online' or 'offline' or 'disabled'
   wandb_group: null
   wandb_id: null
-  wandb_entity: hang0610 # 'hang0610'
+  wandb_entity: lavine_train # 'hang0610'
   wandb_dir: ${experiment_dir}/.wandb

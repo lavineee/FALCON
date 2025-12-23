@@ -28,6 +28,10 @@ class LocoManipPolicy(DecLocomotionPolicy):
         self.residual_upper_body_action = self.config.get("residual_upper_body_action", False)
 
         self.upper_body_controller = None
+        self.active_hand = "both"
+        # 左右手各自的腕 yaw（度）
+        self.left_degrees  = 0.0
+        self.right_degrees = 0.0
         if self.config.get("use_upper_body_controller", False):
             self.init_upper_body_controller()
 
@@ -149,19 +153,128 @@ class LocoManipPolicy(DecLocomotionPolicy):
             pin.SE3(self.EE_right_R.astype(np.float64), np.array([self.EE_right_x, self.EE_right_y, self.EE_right_z]))
         ]
 
+    # def handle_keyboard_button(self, keycode):
+    #     super().handle_keyboard_button(keycode)
+    #     if keycode == ",":
+    #         self.waist_dofs_command[:, 0] -= 0.2
+    #         self.logger.info(colored(f"waist yaw: {self.waist_dofs_command[:, 0]}", "green"))
+    #     elif keycode == ".":
+    #         self.waist_dofs_command[:, 0] += 0.2
+    #         self.logger.info(colored(f"waist yaw: {self.waist_dofs_command[:, 0]}", "green"))
+    #     elif keycode == "m":
+    #         self.lin_vel_command[:, 0] = -1.0
+    #         self.logger.info(colored(f"lin_vel_command: {self.lin_vel_command}", "green"))
+    #     elif keycode in ["1", "2"]:
+    #         self._handle_base_height_control(keycode)
     def handle_keyboard_button(self, keycode):
         super().handle_keyboard_button(keycode)
+
+        # === 你原有的 ",", ".", "m", "1/2" 逻辑保持不动 ===
         if keycode == ",":
             self.waist_dofs_command[:, 0] -= 0.2
             self.logger.info(colored(f"waist yaw: {self.waist_dofs_command[:, 0]}", "green"))
+            return
         elif keycode == ".":
             self.waist_dofs_command[:, 0] += 0.2
             self.logger.info(colored(f"waist yaw: {self.waist_dofs_command[:, 0]}", "green"))
+            return
         elif keycode == "m":
             self.lin_vel_command[:, 0] = -1.0
             self.logger.info(colored(f"lin_vel_command: {self.lin_vel_command}", "green"))
+            return
         elif keycode in ["1", "2"]:
             self._handle_base_height_control(keycode)
+            return
+
+        # === 选择手 ===
+        if keycode == "x":  # 左手
+            self._select_hand("left");  return
+        if keycode == "c":  # 右手
+            self._select_hand("right"); return
+        if keycode == "b":  # 双手
+            self._select_hand("both");  return
+
+        # === 末端位置增量（米） ===
+        STEP_X = 0.05
+        STEP_Y = 0.02
+        STEP_Z = 0.05
+
+        if keycode == "h":   # X+
+            self._nudge_pos(dx=+STEP_X)
+            self.logger.info(colored(f"EE X+ ({self.active_hand})", "green"));  return
+        if keycode == "f":   # X-
+            self._nudge_pos(dx=-STEP_X)
+            self.logger.info(colored(f"EE X- ({self.active_hand})", "green"));  return
+        if keycode == "t":   # Y+
+            self._nudge_pos(dy=+STEP_Y)
+            self.logger.info(colored(f"EE Y+ ({self.active_hand})", "green"));  return
+        if keycode == "g":   # Y-
+            self._nudge_pos(dy=-STEP_Y)
+            self.logger.info(colored(f"EE Y- ({self.active_hand})", "green"));  return
+        if keycode == "r":   # Z+
+            self._nudge_pos(dz=+STEP_Z)
+            self.logger.info(colored(f"EE Z+ ({self.active_hand})", "green"));  return
+        if keycode == "v":   # Z-
+            self._nudge_pos(dz=-STEP_Z)
+            self.logger.info(colored(f"EE Z- ({self.active_hand})", "green"));  return
+
+        # === 腕 yaw 增量（度） ===
+        YAW_STEP_DEG = 5.0
+        if keycode == "9":   # yaw +
+            self._nudge_yaw(+YAW_STEP_DEG)
+            self.logger.info(colored(f"EE Yaw+ ({self.active_hand})", "green")); return
+        if keycode == "0":   # yaw -
+            self._nudge_yaw(-YAW_STEP_DEG)
+            self.logger.info(colored(f"EE Yaw- ({self.active_hand})", "green")); return
+
+        # === 重置当前手 ===
+        if keycode == "p":
+            if self.active_hand in ["left", "both"]:
+                self.EE_left_x,  self.EE_left_y,  self.EE_left_z  = 0.30,  0.13,  0.08
+                self.left_degrees = 0.0
+            if self.active_hand in ["right", "both"]:
+                self.EE_right_x, self.EE_right_y, self.EE_right_z = 0.30, -0.13,  0.08
+                self.right_degrees = 0.0
+            self._update_ee_R(); self.update_waypoints()
+            self.logger.info(colored(f"EE reset ({self.active_hand})", "green")); return
+
+    def _update_ee_R(self):
+        """根据左右 yaw 角同步两手的末端朝向矩阵"""
+        thL = np.radians(self.left_degrees)
+        thR = np.radians(self.right_degrees)
+        self.EE_left_R = np.array([[ np.cos(thL), -np.sin(thL), 0],
+                                [ np.sin(thL),  np.cos(thL), 0],
+                                [ 0, 0, 1]], dtype=float)
+        self.EE_right_R = np.array([[ np.cos(thR), -np.sin(thR), 0],
+                                    [ np.sin(thR),  np.cos(thR), 0],
+                                    [ 0, 0, 1]], dtype=float)
+
+    def _select_hand(self, hand: str):
+        assert hand in ["left", "right", "both"]
+        self.active_hand = hand
+        self.logger.info(colored(f"Active hand: {self.active_hand}", "cyan"))
+
+    def _nudge_pos(self, dx=0.0, dy=0.0, dz=0.0):
+        """对当前选中手，增量修改 EE 目标位置"""
+        if self.active_hand in ["left", "both"]:
+            self.EE_left_x  += dx
+            self.EE_left_y  += dy
+            self.EE_left_z  += dz
+        if self.active_hand in ["right", "both"]:
+            self.EE_right_x += dx
+            self.EE_right_y += dy
+            self.EE_right_z += dz
+        self.update_waypoints()
+
+    def _nudge_yaw(self, ddeg=0.0):
+        """对当前选中手，增量修改腕 yaw"""
+        if self.active_hand in ["left", "both"]:
+            self.left_degrees  += ddeg
+        if self.active_hand in ["right", "both"]:
+            self.right_degrees += ddeg
+        self._update_ee_R()
+        self.update_waypoints()
+
 
     def handle_joystick_button(self, cur_key):
         super().handle_joystick_button(cur_key)

@@ -1,0 +1,11 @@
+unset PYTHONPATH export PYTHONNOUSERSITE=1
+
+运行sim2sim
+
+conda activate fcreal
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+
+python rl_policy/loco_manip/loco_manip.py \
+--config=config/g1/g1_29dof_falcon.yaml \
+--model_path=models/falcon/g1_29dof.onnx 
