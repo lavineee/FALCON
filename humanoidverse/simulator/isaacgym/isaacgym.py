@@ -490,6 +490,38 @@ class IsaacGym(BaseSimulator):
                                                        gymtorch.unwrap_tensor(pos_tensor), 
                                                        gymapi.ENV_SPACE)
 
+    def apply_rigid_body_torque_tensor(self, torque_tensor):
+        """
+        
+        torque_tensor: torch.Tensor, shape (num_envs, num_bodies, 3), in ENV_SPACE
+
+        """
+        # 1) 如果你的 IsaacGym build 支持 torque 专用 API，就直接用
+        if hasattr(self.gym, "apply_rigid_body_torque_tensors"):
+            self.gym.apply_rigid_body_torque_tensors(
+                self.sim,
+                gymtorch.unwrap_tensor(torque_tensor),
+                gymapi.ENV_SPACE,
+            )
+            return
+
+        # 2) 很多 build 只有 apply_rigid_body_force_tensors(force, torque, space)
+        if hasattr(self.gym, "apply_rigid_body_force_tensors"):
+            zero_force = torch.zeros_like(torque_tensor)
+            self.gym.apply_rigid_body_force_tensors(
+                self.sim,
+                gymtorch.unwrap_tensor(zero_force),
+                gymtorch.unwrap_tensor(torque_tensor),
+                gymapi.ENV_SPACE,
+            )
+            return
+
+        # 3) 都没有：明确报错（此时只能走“力偶近似”的 fallback）
+        raise AttributeError(
+            "IsaacGym Gym binding has neither apply_rigid_body_torque_tensors nor "
+            "apply_rigid_body_force_tensors. Please implement a force-couple fallback."
+        )
+
     def set_dof_state_tensor(self, set_env_ids, dof_states):
         set_env_ids_int32 = set_env_ids.to(torch.int32)
         self.gym.set_dof_state_tensor_indexed(self.sim, 

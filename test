@@ -1,3 +1,10 @@
+训练
+./run_phase2.sh 2>&1 | tee logs_shell/phase2_$(date +%Y%m%d_%H%M%S).log
+
+
+
+
+
 unset PYTHONPATH export PYTHONNOUSERSITE=1
 
 运行sim2sim
