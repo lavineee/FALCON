@@ -1,0 +1,86 @@
+<!-- valve_body_include.xml (无限转版本：hinge 不限位 + wheel 与 stand 分组隔离) -->
+<body name="valve_stand" pos="1.00 -0.20 0.00">
+
+    <!-- 固定管道：组1 -->
+    <geom name="valve_pipe"
+          type="cylinder"
+          size="0.06 0.5"
+          pos="0 0 0.5"
+          rgba="0.35 0.35 0.38 1"
+          contype="1"
+          conaffinity="1"
+          friction="1 0.005 0.0001"/>
+
+    <!-- 阀门底座：组1 -->
+    <geom name="valve_block"
+          type="box"
+          size="0.10 0.10 0.08"
+          pos="0 0 1.00"
+          rgba="0.35 0.35 0.38 1"
+          contype="1"
+          conaffinity="1"/>
+
+    <!-- 阀杆：组1 -->
+    <geom name="valve_stem"
+          type="cylinder"
+          size="0.018 0.06"
+          pos="0.06 0 1.00"
+          euler="0 90 0"
+          rgba="0.25 0.25 0.28 1"
+          contype="1"
+          conaffinity="1"/>
+
+    <!-- 可旋转阀门轮：组2（避免与组1自撞） -->
+    <body name="valve_wheel" pos="0.12 0 1.00">
+
+        <!-- 显式惯性 -->
+        <inertial pos="0 0 0"
+                  mass="2.0"
+                  diaginertia="0.02 0.02 0.02"/>
+
+        <!-- 关键：无限转 hinge joint（不限制角度，不写 range） -->
+        <joint name="valve_hinge"
+               type="hinge"
+               axis="1 0 0"
+               pos="0 0 0"
+               limited="false"
+               damping="0.1"
+               frictionloss="0.8"/>
+
+        <!-- 轮毂：组2 -->
+        <geom name="wheel_hub"
+              type="cylinder"
+              size="0.03 0.01"
+              pos="0 0 0"
+              euler="0 90 0"
+              rgba="0.75 0.10 0.10 1"
+              contype="2"
+              conaffinity="2"/>
+
+        <!-- 外圈：组2 -->
+        <geom name="rim_00" type="capsule" size="0.012" fromto="0 0.1400 0.0000 0 0.1293 0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_01" type="capsule" size="0.012" fromto="0 0.1293 0.0536 0 0.0990 0.0990" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_02" type="capsule" size="0.012" fromto="0 0.0990 0.0990 0 0.0536 0.1293" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_03" type="capsule" size="0.012" fromto="0 0.0536 0.1293 0 0.0000 0.1400" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_04" type="capsule" size="0.012" fromto="0 0.0000 0.1400 0 -0.0536 0.1293" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_05" type="capsule" size="0.012" fromto="0 -0.0536 0.1293 0 -0.0990 0.0990" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_06" type="capsule" size="0.012" fromto="0 -0.0990 0.0990 0 -0.1293 0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_07" type="capsule" size="0.012" fromto="0 -0.1293 0.0536 0 -0.1400 0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_08" type="capsule" size="0.012" fromto="0 -0.1400 0.0000 0 -0.1293 -0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_09" type="capsule" size="0.012" fromto="0 -0.1293 -0.0536 0 -0.0990 -0.0990" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_10" type="capsule" size="0.012" fromto="0 -0.0990 -0.0990 0 -0.0536 -0.1293" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_11" type="capsule" size="0.012" fromto="0 -0.0536 -0.1293 0 -0.0000 -0.1400" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_12" type="capsule" size="0.012" fromto="0 -0.0000 -0.1400 0 0.0536 -0.1293" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_13" type="capsule" size="0.012" fromto="0 0.0536 -0.1293 0 0.0990 -0.0990" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_14" type="capsule" size="0.012" fromto="0 0.0990 -0.0990 0 0.1293 -0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="rim_15" type="capsule" size="0.012" fromto="0 0.1293 -0.0536 0 0.1400 -0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+
+        <!-- 辐条：组2 -->
+        <geom name="spoke_00" type="capsule" size="0.01" fromto="0 0 0 0 0.1330 0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="spoke_01" type="capsule" size="0.01" fromto="0 0 0 0 0.0411 0.1265" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="spoke_02" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="spoke_03" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 -0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="spoke_04" type="capsule" size="0.01" fromto="0 0 0 0 0.0411 -0.1265" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+
+    </body>
+</body>

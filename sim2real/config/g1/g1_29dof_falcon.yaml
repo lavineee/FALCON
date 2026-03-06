@@ -26,8 +26,8 @@ USE_JOYSTICK: 0 # Simulate Unitree WirelessController using a gamepad (0: disabl
 JOYSTICK_TYPE: "xbox" # support "xbox" and "switch" gamepad layout
 JOYSTICK_DEVICE: 0 # Joystick number
 
-VISUALIZE_PIN: False
-VISUALIZE_FORCES: False
+VISUALIZE_PIN: True
+VISUALIZE_FORCES: True
 
 residual_upper_body_action: True # Whether to use residual upper body action for balancing
 use_upper_body_controller: True # Whether to use upper body controller

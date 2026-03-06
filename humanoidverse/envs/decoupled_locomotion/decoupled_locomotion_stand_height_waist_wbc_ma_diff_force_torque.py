@@ -549,9 +549,18 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBCForce(LeggedRobotDecoupledLoc
         
         self.simulator.apply_torques_at_dof(self.torques)
     
+    def _setup_simulator_control(self):
+        # 让 viewer 的键盘事件作用在 env.commands 上（同一个 tensor 引用）
+        self.simulator.commands = self.commands
+
     def _physics_step(self):
         self.render()
         self._calculate_ee_forces()
+        # --- keep tensors consistent with what is actually applied ---
+        if not self.config.get("apply_torque_in_physics_step", False):
+            self.left_ee_apply_torque.zero_()
+            self.right_ee_apply_torque.zero_()
+            self.apply_torque_tensor.zero_()
         for _ in range(self.config.simulator.config.sim.control_decimation):
             self._apply_force_in_physics_step()
             self.simulator.simulate_at_each_physics_step()
@@ -815,6 +824,37 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBCForce(LeggedRobotDecoupledLoc
                                         Point(end_point + torch.rand(3, device=self.device) * line_width),
                                         Point(color),
                                         env_id)
+                    
+            # ---------------- NEW: draw torques (moments) ----------------
+            if self.config.get("vis_torque", True):
+                tau_left_hand = self.apply_torque_tensor[env_id, self.left_hand_link_index, :]
+                tau_right_hand = self.apply_torque_tensor[env_id, self.right_hand_link_index, :]
+
+                # torque does not have an application point; visualize at link COM position
+                tau_pos_left = self.simulator._rigid_body_pos[env_id, self.left_hand_link_index, :]
+                tau_pos_right = self.simulator._rigid_body_pos[env_id, self.right_hand_link_index, :]
+
+                # scale for visualization (tune if needed)
+                torque_mag = float(self.config.get("torque_vis_scale", 0.05))
+                torque_list = [tau_left_hand, tau_right_hand]
+                tau_pos_list = [tau_pos_left, tau_pos_right]
+
+                # use a different color than force (e.g., blue-ish)
+                torque_colors = [(0.10, 0.40, 0.90), (0.10, 0.40, 0.90)]
+                torque_line_widths = [0.02, 0.02]
+
+                for tau, pos, color, line_width in zip(torque_list, tau_pos_list, torque_colors, torque_line_widths):
+                    # draw multiple jittered lines to look like a thick arrow (same style as force)
+                    for _ in range(20):
+                        start_point = pos + torch.rand(3, device=self.device) * line_width
+                        end_point = pos + tau * torque_mag
+                        self.simulator.draw_line(
+                            Point(start_point + torch.rand(3, device=self.device) * line_width),
+                            Point(end_point + torch.rand(3, device=self.device) * line_width),
+                            Point(color),
+                            env_id
+                        )
+
 
     ############################ Curriculum #############################
     def _update_upper_body_tracking_sigma_curriculum(self, env_ids):

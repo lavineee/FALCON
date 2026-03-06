@@ -11,3 +11,7 @@ hydra: # So hydra will put your config info in the same dir as your checkpoints
   #   disable_existing_loggers: true
   # hydra_logging:
   #   disable_existing_loggers: true
+env:
+  config:
+    vis_torque: true
+    torque_vis_scale: 0.05

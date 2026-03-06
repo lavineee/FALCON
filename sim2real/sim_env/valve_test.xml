@@ -1,0 +1,5 @@
+<mujoco model="valve_test">
+  <worldbody>
+    <include file="valve_body_include.xml"/>
+  </worldbody>
+</mujoco>

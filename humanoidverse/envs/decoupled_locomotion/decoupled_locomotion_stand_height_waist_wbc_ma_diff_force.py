@@ -142,6 +142,9 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBCForce(LeggedRobotDecoupledLoc
         # self.apply_force_phase_ts[self.env_ids_stance] += self.force_phase_ts_up_or_down[self.env_ids_stance] / self.apply_force_duration[self.env_ids_stance]
         self.left_ee_apply_force_phase[self.env_ids_stance] = abs(torch.remainder(self.left_ee_apply_force_phase_ts[self.env_ids_stance], 2.0) - 1.0)
         self.right_ee_apply_force_phase[self.env_ids_stance] = abs(torch.remainder(self.right_ee_apply_force_phase_ts[self.env_ids_stance], 2.0) - 1.0)
+    def _setup_simulator_control(self):
+        # 让 viewer 的键盘事件作用在 env.commands 上（同一个 tensor 引用）
+        self.simulator.commands = self.commands
 
     def _calculate_max_ee_forces(self):
         # Apply the force at the hand links
