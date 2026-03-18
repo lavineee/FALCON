@@ -1,7 +1,6 @@
-<!-- valve_body_include.xml (无限转版本：hinge 不限位 + wheel 与 stand 分组隔离) -->
-<body name="valve_stand" pos="1.00 -0.20 0.00">
+<!-- <body name="valve_stand" pos="0.0798 -0.2327 0.0002"> -->
+<body name="valve_stand" pos="0 0 0.00">
 
-    <!-- 固定管道：组1 -->
     <geom name="valve_pipe"
           type="cylinder"
           size="0.06 0.5"
@@ -11,7 +10,6 @@
           conaffinity="1"
           friction="1 0.005 0.0001"/>
 
-    <!-- 阀门底座：组1 -->
     <geom name="valve_block"
           type="box"
           size="0.10 0.10 0.08"
@@ -20,7 +18,6 @@
           contype="1"
           conaffinity="1"/>
 
-    <!-- 阀杆：组1 -->
     <geom name="valve_stem"
           type="cylinder"
           size="0.018 0.06"
@@ -30,24 +27,19 @@
           contype="1"
           conaffinity="1"/>
 
-    <!-- 可旋转阀门轮：组2（避免与组1自撞） -->
     <body name="valve_wheel" pos="0.12 0 1.00">
-
-        <!-- 显式惯性 -->
         <inertial pos="0 0 0"
                   mass="2.0"
                   diaginertia="0.02 0.02 0.02"/>
 
-        <!-- 关键：无限转 hinge joint（不限制角度，不写 range） -->
         <joint name="valve_hinge"
                type="hinge"
                axis="1 0 0"
                pos="0 0 0"
                limited="false"
-               damping="0.1"
+               damping="0.15"
                frictionloss="0.8"/>
 
-        <!-- 轮毂：组2 -->
         <geom name="wheel_hub"
               type="cylinder"
               size="0.03 0.01"
@@ -57,7 +49,6 @@
               contype="2"
               conaffinity="2"/>
 
-        <!-- 外圈：组2 -->
         <geom name="rim_00" type="capsule" size="0.012" fromto="0 0.1400 0.0000 0 0.1293 0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="rim_01" type="capsule" size="0.012" fromto="0 0.1293 0.0536 0 0.0990 0.0990" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="rim_02" type="capsule" size="0.012" fromto="0 0.0990 0.0990 0 0.0536 0.1293" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
@@ -75,12 +66,17 @@
         <geom name="rim_14" type="capsule" size="0.012" fromto="0 0.0990 -0.0990 0 0.1293 -0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="rim_15" type="capsule" size="0.012" fromto="0 0.1293 -0.0536 0 0.1400 -0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
 
-        <!-- 辐条：组2 -->
         <geom name="spoke_00" type="capsule" size="0.01" fromto="0 0 0 0 0.1330 0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_01" type="capsule" size="0.01" fromto="0 0 0 0 0.0411 0.1265" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_02" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_03" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 -0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_04" type="capsule" size="0.01" fromto="0 0 0 0 0.0411 -0.1265" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
 
+        <body name="right_hand_valve_anchor" pos="0 0.084 -0.112">
+            <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-8 1e-8 1e-8"/>
+            <site name="right_hand_valve_site" pos="0 0 0" size="0.012" rgba="0 1 0 1" type="sphere"/>
+        </body>
+
+        <site name="valve_center_site" pos="0 0 0" size="0.008" rgba="0 0 1 1" type="sphere"/>
     </body>
 </body>

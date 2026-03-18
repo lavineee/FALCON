@@ -1,5 +1,6 @@
 <!-- valve_body_include.xml (无限转版本：hinge 不限位 + wheel 与 stand 分组隔离) -->
-<body name="valve_stand" pos="1.00 -0.20 0.00">
+<!-- <body name="valve_stand" pos="1.00 -0.20 0.00"> -->
+<body name="valve_stand" pos="0.12 -0.28 0.00">
 
     <!-- 固定管道：组1 -->
     <geom name="valve_pipe"

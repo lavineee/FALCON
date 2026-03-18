@@ -19,18 +19,25 @@
   <worldbody>
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
-    <body name="valve_spawn" pos="0.50 0.00 0.00" quat="0 0 0 1">
+
+    <body name="valve_spawn" pos="0.41 0 0.00" quat="0 0 0 1">
       <include file="valve_body_include.xml"/>
     </body>
-
-    <!-- Site -->
-    <!-- <site name="com_marker" pos="0.1 0 0" size="0.05" rgba="1 0 0 1" type="sphere"/>
-    <site name="left_hand_marker" pos="0.1 0 0" size="0.025" rgba="0 1 0 1" type="sphere"/>
-    <site name="right_hand_marker" pos="0.1 0 0" size="0.025" rgba="0 1 0 1" type="sphere"/>
-    <site name="left_foot_marker" pos="0.1 0 0" size="0.025" rgba="1 0 0 1" type="sphere"/>
-    <site name="right_foot_marker" pos="0.1 0 0" size="0.025" rgba="1 0 0 1" type="sphere"/> -->
   </worldbody>
-  <!-- <default>
-    <geom friction="0.5"/>
-  </default> -->
+
+  <!-- <equality>
+    <weld name="right_hand_valve_weld"
+          body1="right_rubber_hand"
+          body2="right_hand_valve_anchor"
+          solref="0.002 1"
+          solimp="0.95 0.99 0.001"/>
+  </equality> -->
+  <equality>
+  <weld name="right_hand_valve_weld"
+        body1="right_rubber_hand"
+        body2="right_hand_valve_anchor"
+        active="false"
+        solref="0.002 1"
+        solimp="0.95 0.99 0.001"/>
+</equality>
 </mujoco>

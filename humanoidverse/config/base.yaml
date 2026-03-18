@@ -28,7 +28,7 @@ save_dir: ${experiment_dir}/.hydra
 
 force_flat_terrain: False
 
-use_wandb: False
+use_wandb: True
 log_task_name: TEST
 
 ### Simulation
@@ -40,4 +40,4 @@ eval_overrides:
   headless: False
   num_envs: 1
   auto_load_latest: False
-  use_wandb: False
+  use_wandb: True

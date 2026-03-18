@@ -31,10 +31,17 @@ python rl_policy/loco_manip/loco_manip.py \
 
 
 
-Error executing job with overrides: ['+checkpoint=logs/g1_29dof_falcon/20251224_072328-g1_29dof_falcon_torque_phase2-decoupled_locomotion-g1_29dof_fakehand/model_10000.pt']
-Traceback (most recent call last):
-  File "humanoidverse/eval_agent.py", line 134, in main
-    export_policy_as_jit(algo.alg.actor_critic, exported_policy_path, exported_policy_name)
-AttributeError: 'PPOMultiActorCritic' object has no attribute 'alg'
 
-Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+chmod +x launch_valve_demo_auto_v2.sh
+./launch_valve_demo_auto_v2.sh
+
+换别的模型
+MODEL_PATH="models/torque/model_10000.onnx" ./launch_valve_demo_auto_v2.sh
+
+
+
+
+conda activate fcreal
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+pip install matplotlib
