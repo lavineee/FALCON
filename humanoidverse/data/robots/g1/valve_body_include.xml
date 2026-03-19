@@ -32,13 +32,20 @@
                   mass="2.0"
                   diaginertia="0.02 0.02 0.02"/>
 
+        <!-- <joint name="valve_hinge"
+               type="hinge"
+               axis="1 0 0"
+               pos="0 0 0"
+               limited="false"
+               damping="0.15"
+               frictionloss="0.8"/> -->
         <joint name="valve_hinge"
                type="hinge"
                axis="1 0 0"
                pos="0 0 0"
                limited="false"
                damping="0.15"
-               frictionloss="0.8"/>
+               frictionloss="0.25"/>
 
         <geom name="wheel_hub"
               type="cylinder"
@@ -66,7 +73,7 @@
         <geom name="rim_14" type="capsule" size="0.012" fromto="0 0.0990 -0.0990 0 0.1293 -0.0536" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="rim_15" type="capsule" size="0.012" fromto="0 0.1293 -0.0536 0 0.1400 -0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
 
-        <geom name="spoke_00" type="capsule" size="0.01" fromto="0 0 0 0 0.1330 0.0000" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
+        <geom name="spoke_00" type="capsule" size="0.01" fromto="0 0 0 0 0.1330 0.0000" rgba="1 1 1 1" contype="2" conaffinity="2"/>
         <geom name="spoke_01" type="capsule" size="0.01" fromto="0 0 0 0 0.0411 0.1265" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_02" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>
         <geom name="spoke_03" type="capsule" size="0.01" fromto="0 0 0 0 -0.1076 -0.0782" rgba="0.75 0.10 0.10 1" contype="2" conaffinity="2"/>

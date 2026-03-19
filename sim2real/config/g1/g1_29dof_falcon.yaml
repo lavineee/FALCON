@@ -292,3 +292,15 @@ obs_scales: {
     actions: 1.0,
     phase_time: 1.0,
   }
+
+valve_turn_target_deg: 30.0
+valve_turn_speed_deg: 5.0
+
+# 这里填你当前场景里 valve_center_site 的真实世界坐标
+valve_center_world: [0.20, -0.15, 1.00]
+
+# 当前阀门轴为 x 轴
+valve_axis_world: [1.0, 0.0, 0.0]
+
+# 如果 robot_state_data[3:7] 是 [w, x, y, z]，就改成 wxyz
+base_quat_order: "xyzw"
