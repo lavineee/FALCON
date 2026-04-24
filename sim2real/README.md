@@ -258,6 +258,16 @@ ELASTIC_LENGTH=-0.05 \
 - `/tmp/falcon_ee_tracking_7dof_with_hand_markers.json`
 - `/tmp/falcon_ee_tracking_7dof_with_hand_metrics.csv`
 
+使用当前跟踪优化配置时：
+
+```bash
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+DURATION_SEC=60 \
+ELASTIC_LENGTH=-0.05 \
+EXTRA_OVERLAY_CONFIG=config/g1/g1_29dof_with_hand_tracking_tuned_overlay.yaml \
+./launch_ee_tracking_7dof_with_hand_auto.sh
+```
+
 常用环境变量：
 
 - `DURATION_SEC`：policy 侧运行总时长。
@@ -268,6 +278,10 @@ ELASTIC_LENGTH=-0.05 \
 - `ELASTIC_RELEASE_DELAY_AFTER_POLICY_START_SEC`：policy 启动后多久松绳，默认 1 秒。
 - `TRACKING_START_DELAY_SEC`：松绳稳定后多久开始随机目标测试。
 - `HAND_CLOSE_ERROR_M`：带手版本中，右手闭合的误差阈值。
+- `EXTRA_OVERLAY_CONFIG`：额外 yaml overlay。带手跟踪优化推荐使用 `config/g1/g1_29dof_with_hand_tracking_tuned_overlay.yaml`。
+- `TRACKING_IK_SPEED_FACTOR` / `TRACKING_IK_TRANS_WEIGHT` / `TRACKING_IK_REG_WEIGHT` / `TRACKING_IK_SMOOTH_WEIGHT`：临时覆盖 IK 调参。
+- `TRACKING_UPPER_TAU_FF_SCALE` / `TRACKING_UPPER_TAU_FF_CLIP`：临时覆盖上肢前馈力矩比例和裁剪。
+- `TRACKING_WRIST_KP_SCALE` / `TRACKING_WRIST_KD_SCALE`：临时缩放左右 wrist roll/pitch/yaw 的 PD 增益。
 
 当前自动脚本的基本流程是：
 
@@ -282,14 +296,37 @@ ELASTIC_LENGTH=-0.05 \
 
 跟踪数据会写入 CSV，可以用于画误差曲线、每目标点收敛统计、P90 / P95 分位误差和稳态误差分布。本地生成过的评测图和摘要默认放在 `sim2real/eval_outputs/`，该目录用于本地分析，默认不作为代码提交内容。
 
+当前推荐分析脚本：
+
+```bash
+cd /home/lavine/project/FALCON
+/home/lavine/miniconda3/envs/fcreal/bin/python \
+  sim2real/tools/analyze_ee_tracking_metrics.py \
+  /tmp/falcon_ee_tracking_7dof_with_hand_metrics.csv \
+  --steady_after_s=2.0 \
+  --report sim2real/eval_outputs/ee_tracking_with_hand_report.md \
+  --plot sim2real/eval_outputs/ee_tracking_with_hand_report.png \
+  --title 带手末端跟踪评测
+```
+
+CSV 中新增的误差分解字段：
+
+- `ik_error_m`：目标点到 IK 参考末端点的距离。
+- `servo_error_m`：实际末端点到 IK 参考末端点的距离。
+- `current_speed_mps`：实际末端点速度，用于判断稳态晃动。
+
 已记录的典型结果：
 
 - 4DoF 假手长时间测试：整体均值约 2.92 cm，稳态均值约 1.33 cm，稳态 P95 约 2.00 cm。
 - 7DoF 假手测试：整体均值约 3.25 cm，稳态均值约 1.62 cm，稳态 P95 约 2.27 cm。
 - 7DoF 放大范围测试：整体均值约 4.19 cm，稳态均值约 1.77 cm，稳态 P95 约 2.58 cm。
 - 7DoF 带手短回归：均值约 4.56 cm，RMS 约 5.54 cm，最大误差约 18.25 cm，最大值主要来自目标切换瞬态。
+- 7DoF 带手基线定量评测：overall mean 约 5.10 cm，steady mean 约 2.48 cm，steady P95 约 4.08 cm。
+- 7DoF 带手优化评测：overall mean 约 3.61 cm，steady mean 约 2.03 cm，steady P95 约 2.64 cm；稳态末端速度 P95 从 0.035 m/s 降到 0.005 m/s。
 
 这里的 P90 / P95 表示误差分布的 90% / 95% 分位数。例如 P95 为 2.5 cm，表示 95% 的统计样本误差不超过 2.5 cm。
+
+更完整的误差来源分析、复现实验命令和优化参数解释见 `EE_TRACKING_OPTIMIZATION_REPORT.md`。
 
 ## 带手模型说明
 

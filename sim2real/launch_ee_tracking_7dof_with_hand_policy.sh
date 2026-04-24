@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 BASE_CONFIG="${BASE_CONFIG:-config/g1/g1_29dof_falcon.yaml}"
 OVERLAY_CONFIG="${OVERLAY_CONFIG:-config/g1/g1_29dof_with_hand_tracking_overlay.yaml}"
+EXTRA_OVERLAY_CONFIG="${EXTRA_OVERLAY_CONFIG:-}"
 MERGED_CONFIG="${MERGED_CONFIG:-/tmp/falcon_g1_29dof_with_hand_tracking.yaml}"
 MODEL_PATH="${MODEL_PATH:-models/falcon/g1_29dof.onnx}"
 MARKER_FILE="${MARKER_FILE:-/tmp/falcon_ee_tracking_7dof_with_hand_markers.json}"
@@ -25,7 +26,19 @@ ELASTIC_RELEASE_DELAY_AFTER_POLICY_START_SEC="${ELASTIC_RELEASE_DELAY_AFTER_POLI
 DURATION_SEC="${DURATION_SEC:-}"
 HAND_CLOSE_ERROR_M="${HAND_CLOSE_ERROR_M:-}"
 
+export EXTRA_OVERLAY_CONFIG
+export TRACKING_IK_SPEED_FACTOR="${TRACKING_IK_SPEED_FACTOR:-}"
+export TRACKING_IK_TRANS_WEIGHT="${TRACKING_IK_TRANS_WEIGHT:-}"
+export TRACKING_IK_REG_WEIGHT="${TRACKING_IK_REG_WEIGHT:-}"
+export TRACKING_IK_SMOOTH_WEIGHT="${TRACKING_IK_SMOOTH_WEIGHT:-}"
+export TRACKING_IK_FILTER_WEIGHTS="${TRACKING_IK_FILTER_WEIGHTS:-}"
+export TRACKING_UPPER_TAU_FF_SCALE="${TRACKING_UPPER_TAU_FF_SCALE:-}"
+export TRACKING_UPPER_TAU_FF_CLIP="${TRACKING_UPPER_TAU_FF_CLIP:-}"
+export TRACKING_WRIST_KP_SCALE="${TRACKING_WRIST_KP_SCALE:-}"
+export TRACKING_WRIST_KD_SCALE="${TRACKING_WRIST_KD_SCALE:-}"
+
 "${PYTHON_BIN}" - <<PY
+import os
 import yaml
 
 with open("${BASE_CONFIG}") as file:
@@ -33,6 +46,49 @@ with open("${BASE_CONFIG}") as file:
 with open("${OVERLAY_CONFIG}") as file:
     overlay = yaml.safe_load(file)
 config.update(overlay)
+extra_overlay_configs = [
+    item.strip()
+    for item in os.environ.get("EXTRA_OVERLAY_CONFIG", "").replace(",", ":").split(":")
+    if item.strip()
+]
+for overlay_path in extra_overlay_configs:
+    with open(overlay_path) as file:
+        config.update(yaml.safe_load(file))
+
+float_env_overrides = {
+    "tracking_ik_speed_factor": "TRACKING_IK_SPEED_FACTOR",
+    "tracking_ik_translational_weight": "TRACKING_IK_TRANS_WEIGHT",
+    "tracking_ik_regularization_weight": "TRACKING_IK_REG_WEIGHT",
+    "tracking_ik_smooth_weight": "TRACKING_IK_SMOOTH_WEIGHT",
+    "tracking_upper_tau_ff_scale": "TRACKING_UPPER_TAU_FF_SCALE",
+    "tracking_upper_tau_ff_clip": "TRACKING_UPPER_TAU_FF_CLIP",
+}
+for config_key, env_key in float_env_overrides.items():
+    value = os.environ.get(env_key, "")
+    if value:
+        config[config_key] = float(value)
+
+filter_weights = os.environ.get("TRACKING_IK_FILTER_WEIGHTS", "")
+if filter_weights:
+    config["tracking_ik_filter_weights"] = [float(item) for item in filter_weights.split(",")]
+
+for env_key, config_key in (
+    ("TRACKING_WRIST_KP_SCALE", "tracking_motor_kp_scale_by_name"),
+    ("TRACKING_WRIST_KD_SCALE", "tracking_motor_kd_scale_by_name"),
+):
+    value = os.environ.get(env_key, "")
+    if value:
+        config.setdefault(config_key, {})
+        for joint_name in (
+            "left_wrist_roll_joint",
+            "left_wrist_pitch_joint",
+            "left_wrist_yaw_joint",
+            "right_wrist_roll_joint",
+            "right_wrist_pitch_joint",
+            "right_wrist_yaw_joint",
+        ):
+            config[config_key][joint_name] = float(value)
+
 with open("${MERGED_CONFIG}", "w") as file:
     yaml.safe_dump(config, file, sort_keys=False)
 PY

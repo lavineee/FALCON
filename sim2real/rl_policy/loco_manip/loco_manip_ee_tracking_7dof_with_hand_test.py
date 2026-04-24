@@ -12,6 +12,7 @@ sys.path.append("./rl_policy")
 from sim2real.rl_policy.loco_manip.loco_manip_ee_tracking_7dof_test import (
     LocoManipEETracking7DofTestPolicy,
     _parse_range,
+    apply_named_motor_gain_scales,
 )
 from sim2real.utils.arm_ik.robot_arm_ik_with_hand import G1_29_WithHandArmIK
 
@@ -36,11 +37,7 @@ class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolic
             Visualization=False,
             robot_config=self.config,
         )
-        self.upper_body_controller.opti.minimize(
-            50 * self.upper_body_controller.translational_cost
-            + 0.02 * self.upper_body_controller.regularization_cost
-            + 0.1 * self.upper_body_controller.smooth_cost
-        )
+        self._configure_tracking_ik()
 
         self.waypoint_index = 0
         self.speed_factor = 0.05
@@ -141,6 +138,7 @@ if __name__ == "__main__":
 
     with open(args.config) as file:
         config = yaml.safe_load(file)
+    apply_named_motor_gain_scales(config)
 
     config["disable_keyboard_listener"] = bool(args.auto_start_policy or args.auto_workflow)
     model_path = args.model_path if args.model_path else config.get("model_path")

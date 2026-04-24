@@ -289,3 +289,50 @@ feature-with-hand-ee-tracking
 ```
 
 后续建议继续在该分支上完善带手末端跟踪、阀门抓取和阀门旋转，不要直接推到 `main`。
+
+## 末端跟踪优化记录
+
+日期：2026-04-25
+
+在带手 7DoF 跟踪测试中观察到两个问题：
+
+- 目标切换后存在明显瞬态误差和晃动。
+- 稳态误差仍然有厘米级偏差。
+
+本次优化没有移除上肢 RL residual。原因是 residual 本身是 FALCON 为抗扰动和全身协调加入的策略输出，真实接触任务中需要保留。后续评估应把“末端纯位置精度”和“抗扰动 residual”作为一个权衡，而不是简单追求把 residual 关掉后的最低误差。
+
+完成的工程改动：
+
+- 在跟踪 CSV 中加入 `ik_error_m`、`servo_error_m`、`target_age_s` 和 `current_speed_mps`。
+- 新增 `sim2real/tools/analyze_ee_tracking_metrics.py`，用于生成误差统计和图表。
+- 让 7DoF IK 的 `tracking_ik_speed_factor` 真正作用到 IK controller。
+- 将 IK 的位置权重、正则权重、平滑权重、滤波权重做成配置项。
+- 增加上肢 IK 前馈力矩的可选小比例叠加。
+- 增加按关节名缩放 motor Kp/Kd 的配置入口，当前只用于 wrist 关节调参。
+- 新增 `config/g1/g1_29dof_with_hand_tracking_tuned_overlay.yaml`。
+- 让带手 sim 和 policy 启动脚本都支持 `EXTRA_OVERLAY_CONFIG`，保证调参 overlay 同时作用于仿真和策略侧。
+
+同 seed、同采样范围、同 45 秒流程下的对比结果：
+
+| 指标 | 基线 | 优化版 |
+| --- | ---: | ---: |
+| overall mean | 5.10 cm | 3.61 cm |
+| overall P95 | 15.36 cm | 12.45 cm |
+| steady mean | 2.48 cm | 2.03 cm |
+| steady P95 | 4.08 cm | 2.64 cm |
+| IK steady mean | 0.84 cm | 0.08 cm |
+| servo steady mean | 2.13 cm | 2.01 cm |
+| steady speed P95 | 0.035 m/s | 0.005 m/s |
+
+结论：
+
+- 本次优化主要改善了目标切换后的瞬态误差、IK 收敛误差和稳态晃动。
+- IK 误差已经降到毫米级，后续瓶颈主要是 servo error。
+- 剩余约 2 cm 稳态 servo error 可能来自腕部/肩肘关节实际跟随误差、带手模型动力学、PD 增益和上肢 residual 的叠加。
+- 后续如果继续优化，应先记录右臂 7 个关节的 `q_ref - q_actual`，再决定是调 wrist、调前馈，还是引入更接近阀门任务的圆轨迹评测。
+
+完整报告见：
+
+```bash
+sim2real/EE_TRACKING_OPTIMIZATION_REPORT.md
+```

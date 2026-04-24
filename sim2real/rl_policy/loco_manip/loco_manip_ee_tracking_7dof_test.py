@@ -12,13 +12,54 @@ sys.path.append("./rl_policy")
 
 from sim2real.rl_policy.loco_manip.loco_manip_ee_tracking_test import (
     LocoManipEETrackingTestPolicy,
+    _parse_float_list,
     _parse_range,
+    apply_named_motor_gain_scales,
 )
 from sim2real.utils.arm_ik.robot_arm_ik import G1_29_ArmIK
+from sim2real.utils.arm_ik.weighted_moving_filter import WeightedMovingFilter
 
 
 class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
     """Right hand-pad position tracking test using all 7 right-arm DoFs."""
+
+    def _configure_tracking_ik(self):
+        controller = self.upper_body_controller
+        translational_weight = float(self.config.get("tracking_ik_translational_weight", 50.0))
+        regularization_weight = float(self.config.get("tracking_ik_regularization_weight", 0.02))
+        smooth_weight = float(self.config.get("tracking_ik_smooth_weight", 0.1))
+        include_rotation = bool(self.config.get("tracking_ik_include_rotation", False))
+
+        objective = (
+            translational_weight * controller.translational_cost
+            + regularization_weight * controller.regularization_cost
+            + smooth_weight * controller.smooth_cost
+        )
+        if include_rotation:
+            objective += controller.rotation_cost
+        controller.opti.minimize(objective)
+
+        controller.speed_factor = float(self.config.get("tracking_ik_speed_factor", 0.05))
+        filter_weights = _parse_float_list(self.config.get("tracking_ik_filter_weights", None))
+        if filter_weights:
+            filter_weights = np.asarray(filter_weights, dtype=float)
+            filter_weights = filter_weights / np.sum(filter_weights)
+            controller.smooth_filter = WeightedMovingFilter(
+                filter_weights,
+                controller.reduced_robot.model.nq,
+            )
+
+        self.logger.info(
+            colored(
+                "[EE_TRACK_7DOF] IK tuning: "
+                f"speed={controller.speed_factor:.3f}, "
+                f"w_trans={translational_weight:.1f}, "
+                f"w_reg={regularization_weight:.3f}, "
+                f"w_smooth={smooth_weight:.3f}, "
+                f"rotation={include_rotation}",
+                "cyan",
+            )
+        )
 
     def init_upper_body_controller(self):
         if self.config["ROBOT_TYPE"] != "g1_29dof":
@@ -28,13 +69,7 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
         self.upper_body_controller = G1_29_ArmIK(
             Unit_Test=False, Visualization=False, robot_config=self.config
         )
-        # Position-only test: keep the full 7-DoF arms, but remove orientation
-        # tracking from the IK objective for this evaluation.
-        self.upper_body_controller.opti.minimize(
-            50 * self.upper_body_controller.translational_cost
-            + 0.02 * self.upper_body_controller.regularization_cost
-            + 0.1 * self.upper_body_controller.smooth_cost
-        )
+        self._configure_tracking_ik()
 
         self.waypoint_index = 0
         self.speed_factor = 0.05
@@ -77,6 +112,17 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
             self.dof_names.index(name) for name in self.config["dof_names_upper_body"]
         ]
         self.right_ee_frame_id = self.upper_body_controller.reduced_robot.model.getFrameId("R_ee")
+        self.upper_tau_ff_scale = float(self.config.get("tracking_upper_tau_ff_scale", 0.0))
+        self.upper_tau_ff_clip = self.config.get("tracking_upper_tau_ff_clip", None)
+        self.upper_tau_ff_clip = None if self.upper_tau_ff_clip is None else float(self.upper_tau_ff_clip)
+        if self.upper_tau_ff_scale:
+            self.logger.info(
+                colored(
+                    f"[EE_TRACK_7DOF] upper feedforward tau scale={self.upper_tau_ff_scale:.3f}, "
+                    f"clip={self.upper_tau_ff_clip}",
+                    "cyan",
+                )
+            )
 
     def _send_7dof_policy_action(self):
         cmd_q = np.zeros(self.num_dofs)
@@ -85,13 +131,15 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
 
         robot_state_data = self.state_processor.robot_state_data
         if self.upper_body_controller:
-            upper_body_qpos, _ = self.upper_body_controller.get_q_tau(
+            upper_body_qpos, upper_body_tauff = self.upper_body_controller.get_q_tau(
                 self.waypoints_left[0],
                 self.waypoints_right[0],
                 self.EE_efrc_L,
                 self.EE_efrc_R,
             )
-            self.ref_upper_dof_pos[0, :] = upper_body_qpos[: self.num_upper_dofs]
+            self._last_upper_body_qpos = np.asarray(upper_body_qpos[: self.num_upper_dofs], dtype=float)
+            self._last_upper_body_tauff = np.asarray(upper_body_tauff[: self.num_upper_dofs], dtype=float)
+            self.ref_upper_dof_pos[0, :] = self._last_upper_body_qpos
 
         scaled_policy_action = self.rl_inference(robot_state_data)
         if self.get_ready_state:
@@ -108,6 +156,12 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
                 self.motor_pos_lower_limit_list,
                 self.motor_pos_upper_limit_list,
             )
+
+        if self.upper_tau_ff_scale and self._last_upper_body_tauff is not None:
+            tau_ff = self.upper_tau_ff_scale * self._last_upper_body_tauff
+            if self.upper_tau_ff_clip is not None:
+                tau_ff = np.clip(tau_ff, -self.upper_tau_ff_clip, self.upper_tau_ff_clip)
+            cmd_tau[self.upper_dof_indices] = tau_ff
 
         cmd_q = q_target[0]
         self.command_sender.send_command(
@@ -208,6 +262,7 @@ if __name__ == "__main__":
 
     with open(args.config) as file:
         config = yaml.safe_load(file)
+    apply_named_motor_gain_scales(config)
 
     config["disable_keyboard_listener"] = bool(args.auto_start_policy or args.auto_workflow)
     model_path = args.model_path if args.model_path else config.get("model_path")

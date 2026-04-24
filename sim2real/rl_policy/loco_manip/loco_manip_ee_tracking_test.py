@@ -15,6 +15,32 @@ sys.path.append("./rl_policy")
 from sim2real.rl_policy.loco_manip.loco_manip import LocoManipPolicy
 
 
+def _parse_float_list(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [item.strip() for item in value.split(",") if item.strip()]
+    return [float(item) for item in value]
+
+
+def apply_named_motor_gain_scales(config):
+    """Apply optional named motor gain scales before Robot/CommandSender init."""
+    dof_names = list(config.get("dof_names", []))
+    for config_key, gain_key in (
+        ("tracking_motor_kp_scale_by_name", "MOTOR_KP"),
+        ("tracking_motor_kd_scale_by_name", "MOTOR_KD"),
+    ):
+        scales = config.get(config_key, {}) or {}
+        if not scales:
+            continue
+        gains = list(config[gain_key])
+        for joint_name, scale in scales.items():
+            if joint_name not in dof_names:
+                raise ValueError(f"{config_key} references unknown joint: {joint_name}")
+            gains[dof_names.index(joint_name)] = float(gains[dof_names.index(joint_name)]) * float(scale)
+        config[gain_key] = gains
+
+
 class LocoManipEETrackingTestPolicy(LocoManipPolicy):
     """Right-hand end-effector position tracking test in the robot base frame."""
 
@@ -77,6 +103,13 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         self._last_sample_t = None
         self._target_id = -1
         self._window_errors = []
+        self._window_ik_errors = []
+        self._window_servo_errors = []
+        self._window_current_speeds = []
+        self._last_record_perf_t = None
+        self._last_current_right_ee = None
+        self._last_upper_body_qpos = None
+        self._last_upper_body_tauff = None
 
         self.arm_reduced_joint_indices = [0, 1, 2, 3, 7, 8, 9, 10]
         self.full_arm_joint_indices = [
@@ -100,7 +133,9 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         with open(self.log_file, "w") as file:
             file.write(
                 "time_s,target_id,target_x,target_y,target_z,"
-                "current_x,current_y,current_z,error_m\n"
+                "current_x,current_y,current_z,error_m,"
+                "target_age_s,current_speed_mps,"
+                "ik_x,ik_y,ik_z,ik_error_m,servo_error_m\n"
             )
         if self.sim_control_file:
             self._write_control_file({"policy_started": False, "timestamp": time.time()})
@@ -123,9 +158,17 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         control_dir = os.path.dirname(self.sim_control_file)
         if control_dir:
             os.makedirs(control_dir, exist_ok=True)
+        merged = {}
+        if os.path.exists(self.sim_control_file):
+            try:
+                with open(self.sim_control_file, "r") as file:
+                    merged = json.load(file)
+            except Exception:
+                merged = {}
+        merged.update(payload)
         tmp_file = f"{self.sim_control_file}.tmp"
         with open(tmp_file, "w") as file:
-            json.dump(payload, file)
+            json.dump(merged, file)
         os.replace(tmp_file, self.sim_control_file)
 
     def _sample_right_target(self):
@@ -148,15 +191,29 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         if not self._window_errors:
             return
         errors = np.asarray(self._window_errors, dtype=float)
+        ik_errors = np.asarray(self._window_ik_errors, dtype=float)
+        servo_errors = np.asarray(self._window_servo_errors, dtype=float)
+        speeds = np.asarray(self._window_current_speeds, dtype=float)
+        def finite_mean(values):
+            values = values[np.isfinite(values)]
+            return float(np.mean(values)) if values.size else float("nan")
+        def finite_percentile(values, percentile):
+            values = values[np.isfinite(values)]
+            return float(np.percentile(values, percentile)) if values.size else float("nan")
         self.logger.info(
             colored(
                 f"[EE_TRACK] target={self._target_id} "
                 f"mean={errors.mean():.4f}m rms={np.sqrt(np.mean(errors ** 2)):.4f}m "
-                f"max={errors.max():.4f}m final={errors[-1]:.4f}m",
+                f"max={errors.max():.4f}m final={errors[-1]:.4f}m "
+                f"ik_mean={finite_mean(ik_errors):.4f}m servo_mean={finite_mean(servo_errors):.4f}m "
+                f"speed_p95={finite_percentile(speeds, 95):.3f}m/s",
                 "cyan",
             )
         )
         self._window_errors = []
+        self._window_ik_errors = []
+        self._window_servo_errors = []
+        self._window_current_speeds = []
 
     def _maybe_resample_target(self):
         now = time.perf_counter()
@@ -183,11 +240,22 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
     def _current_right_fake_ee_base(self, robot_state_data):
         full_q = robot_state_data[0, 7 : 7 + self.num_dofs]
         reduced_q = full_q[self.full_arm_joint_indices]
+        return self._right_ee_from_upper_q(reduced_q)
+
+    def _right_ee_from_upper_q(self, upper_q):
         model = self.upper_body_controller.reduced_robot.model
         data = self.upper_body_controller.data
-        pin.framesForwardKinematics(model, data, reduced_q)
+        pin.framesForwardKinematics(model, data, np.asarray(upper_q, dtype=float).reshape(-1))
         pin.updateFramePlacements(model, data)
         return np.array(data.oMf[self.right_ee_frame_id].translation, dtype=float).reshape(3)
+
+    def _last_commanded_right_ee_base(self):
+        if self._last_upper_body_qpos is None:
+            return np.array([np.nan, np.nan, np.nan], dtype=float)
+        try:
+            return self._right_ee_from_upper_q(self._last_upper_body_qpos)
+        except Exception:
+            return np.array([np.nan, np.nan, np.nan], dtype=float)
 
     def _write_marker_file(self, target, current, error):
         payload = {
@@ -205,8 +273,25 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
     def _record_error(self, robot_state_data):
         target = np.array([self.EE_right_x, self.EE_right_y, self.EE_right_z], dtype=float)
         current = self._current_right_fake_ee_base(robot_state_data)
+        commanded = self._last_commanded_right_ee_base()
         error = float(np.linalg.norm(current - target))
+        ik_error = float(np.linalg.norm(commanded - target)) if np.all(np.isfinite(commanded)) else np.nan
+        servo_error = float(np.linalg.norm(current - commanded)) if np.all(np.isfinite(commanded)) else np.nan
+
+        now = time.perf_counter()
+        if self._last_record_perf_t is None or self._last_current_right_ee is None:
+            current_speed = np.nan
+        else:
+            dt = max(now - self._last_record_perf_t, 1e-6)
+            current_speed = float(np.linalg.norm(current - self._last_current_right_ee) / dt)
+        self._last_record_perf_t = now
+        self._last_current_right_ee = current.copy()
+        target_age_s = 0.0 if self._last_sample_t is None else now - self._last_sample_t
+
         self._window_errors.append(error)
+        self._window_ik_errors.append(ik_error)
+        self._window_servo_errors.append(servo_error)
+        self._window_current_speeds.append(current_speed)
 
         t = 0.0 if self._test_start_t is None else time.perf_counter() - self._test_start_t
         with open(self.log_file, "a") as file:
@@ -214,7 +299,9 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
                 f"{t:.6f},{self._target_id},"
                 f"{target[0]:.6f},{target[1]:.6f},{target[2]:.6f},"
                 f"{current[0]:.6f},{current[1]:.6f},{current[2]:.6f},"
-                f"{error:.6f}\n"
+                f"{error:.6f},{target_age_s:.6f},{current_speed:.6f},"
+                f"{commanded[0]:.6f},{commanded[1]:.6f},{commanded[2]:.6f},"
+                f"{ik_error:.6f},{servo_error:.6f}\n"
             )
         self._write_marker_file(target, current, error)
 
@@ -378,6 +465,7 @@ if __name__ == "__main__":
 
     with open(args.config) as file:
         config = yaml.safe_load(file)
+    apply_named_motor_gain_scales(config)
 
     config["disable_keyboard_listener"] = bool(args.auto_start_policy or args.auto_workflow)
     model_path = args.model_path if args.model_path else config.get("model_path")

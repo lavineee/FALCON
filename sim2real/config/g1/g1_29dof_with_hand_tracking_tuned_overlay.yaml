@@ -1,0 +1,42 @@
+# Extra overlay for EE tracking tuning.
+# Load after g1_29dof_with_hand_tracking_overlay.yaml via:
+# EXTRA_OVERLAY_CONFIG=config/g1/g1_29dof_with_hand_tracking_tuned_overlay.yaml
+
+# Make the IK target interpolation faster than the original 0.02 while still
+# avoiding a hard step in joint space when a new target is sampled.
+tracking_ik_speed_factor: 0.04
+tracking_ik_filter_weights: [0.50, 0.25, 0.15, 0.10]
+tracking_ik_translational_weight: 80.0
+tracking_ik_regularization_weight: 0.015
+tracking_ik_smooth_weight: 0.08
+tracking_ik_include_rotation: false
+
+# Use a conservative fraction of the Pinocchio arm gravity/force feedforward.
+# The residual upper-body policy remains active; this only reduces the burden on
+# the joint PD loop.
+tracking_upper_tau_ff_scale: 0.20
+tracking_upper_tau_ff_clip: 2.5
+
+# The EE point is after the wrist-yaw frame, so soft wrist gains are amplified at
+# the measured point. Scale both wrists symmetrically to keep left/right dynamics
+# close to the policy's nominal distribution.
+tracking_motor_kp_scale_by_name:
+  left_wrist_roll_joint: 2.0
+  left_wrist_pitch_joint: 2.0
+  left_wrist_yaw_joint: 2.0
+  right_wrist_roll_joint: 2.0
+  right_wrist_pitch_joint: 2.0
+  right_wrist_yaw_joint: 2.0
+
+tracking_motor_kd_scale_by_name:
+  left_wrist_roll_joint: 3.0
+  left_wrist_pitch_joint: 3.0
+  left_wrist_yaw_joint: 3.0
+  right_wrist_roll_joint: 3.0
+  right_wrist_pitch_joint: 3.0
+  right_wrist_yaw_joint: 3.0
+
+# Slightly increase MuJoCo joint damping for the with-hand model. This is a
+# simulation-only stabilization knob and should be retuned before real-robot use.
+policy_joint_damping: 0.08
+wrist_joint_frictionloss: 0.15
