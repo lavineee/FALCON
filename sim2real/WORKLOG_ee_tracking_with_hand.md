@@ -1,90 +1,93 @@
-# EE Tracking and With-Hand Model Work Log
+# 末端跟踪与带手模型阶段工作日志
 
-Date: 2026-04-25
+日期：2026-04-25
 
-## Background
+## 工作背景
 
-This stage focused on preparing a reliable end-effector tracking evaluation before moving to valve grasping and turning. The goal was to verify that the right arm can track randomized target points in the robot base frame, first with the existing fake-hand model and then with a real hand model.
+本阶段的目标是在进入“抓住阀门并持续转动”之前，先验证右臂末端是否能够可靠跟踪给定目标点。因为后续阀门任务的本质是末端沿受约束圆周轨迹运动，如果自由空间中的末端点位跟踪本身不稳定，直接做抓取和转动会把问题混在一起，难以判断误差来源。
 
-The work intentionally avoided changing the trained 29DoF ONNX policy. The policy still controls the original body joints, while any added hand joints are controlled by a separate simple open/close controller.
+这一阶段刻意不修改已经训练好的 29DoF ONNX 策略。策略仍然只控制原始本体关节；如果模型中增加手部关节，手部开合由额外的简单控制器处理。
 
-## Main Changes
+## 主要改动
 
-1. Added right end-effector tracking evaluation scripts.
-   - Randomly samples right EE targets in a bounded base-frame workspace.
-   - Resamples every 5 seconds.
-   - Logs target/current positions and tracking error.
-   - Visualizes target and current EE proxy points in MuJoCo.
+1. 增加右臂末端跟踪评测脚本。
+   - 在机器人 base 坐标系下随机采样右臂末端目标点。
+   - 默认每 5 秒重采样一次。
+   - 记录目标点、当前末端点和跟踪误差。
+   - 在 MuJoCo 中可视化目标点和当前末端代理点。
 
-2. Added 7DoF right arm tracking.
-   - Extended the IK from 4 arm DoFs to all 7 right arm DoFs.
-   - Kept the test position-only for now; EE orientation is not evaluated.
-   - The measured point is a palm/grasp-center proxy rather than the old fake hand plate.
+2. 增加 7DoF 右臂跟踪版本。
+   - 将 IK 从原来的 4 个手臂自由度扩展到右臂 7 个自由度。
+   - 当前只评测末端位置，不评测末端姿态。
+   - 7DoF 版本使用手掌 / 抓取中心附近的末端代理点，不再使用旧的假手板中心作为最终定义。
 
-3. Automated the MuJoCo test flow.
-   - Starts MuJoCo.
-   - Starts the policy automatically.
-   - Releases the elastic band after policy startup.
-   - Starts random target evaluation after stabilization.
+3. 自动化 MuJoCo 测试流程。
+   - 自动启动 MuJoCo。
+   - 自动启动 policy。
+   - policy 启动后延迟松开弹力绳。
+   - 稳定后开始随机点跟踪测试。
+   - 避免每次都手动按 `]` 和 `9`。
 
-4. Added a FALCON-compatible with-hand MuJoCo model.
-   - Preserves the original FALCON 29DoF body model, freebase actuators, floor friction, and scene assumptions.
-   - Adds real hand body/joint/actuator structure.
-   - Appends 14 hand actuators after the original policy-controlled actuators.
-   - Keeps policy control mapped explicitly by joint/actuator name.
+4. 增加 FALCON 兼容的带手 MuJoCo 模型。
+   - 保留原 FALCON 29DoF 本体模型、freebase actuator、地面摩擦和场景假设。
+   - 在原模型后追加真实手部 body、joint 和 actuator。
+   - 14 个手部 actuator 追加在原始本体 actuator 之后。
+   - policy 控制通过关节 / actuator 名称显式映射，避免 actuator 数量变化导致写错控制量。
 
-5. Added a simple hand controller.
-   - The ONNX policy still outputs only 29DoF commands.
-   - Hand joints are controlled separately by PD torque.
-   - For tracking tests, the right hand opens when a new target is sampled and closes once the EE error is below the configured threshold.
+5. 增加简单手部控制器。
+   - ONNX 策略仍然只输出 29DoF 控制量。
+   - 手部关节单独由 PD torque 控制。
+   - 跟踪测试中，右手在新目标出现时打开；当末端误差低于配置阈值后闭合。
 
-6. Removed dependency on the external `unitree_ros` model path.
-   - Copied the with-hand URDF and missing mesh assets into this repository.
-   - Updated with-hand IK asset paths to use repository-local assets.
-   - Added more robust path resolution in the with-hand IK helper.
+6. 移除对外部 `unitree_ros` 路径的运行依赖。
+   - 将带手 URDF 和缺失 mesh 资产复制到本仓库。
+   - 带手 IK 使用仓库内资产路径。
+   - 路径解析逻辑支持从当前仓库定位 URDF 和 mesh。
 
-## Important Files
+## 重要文件
 
 - `sim2real/sim_env/loco_manip.py`
-  - Added EE marker visualization.
-  - Added automatic elastic-band length/release support.
-  - Made live plot optional when matplotlib is missing.
-  - Made valve/weld lookup tolerant of scenes without a valve.
+  - 增加 EE marker 可视化。
+  - 支持自动设置弹力绳长度和自动松绳。
+  - `matplotlib` 缺失时可关闭实时曲线，不影响仿真。
+  - 对无阀门场景做容错，避免 tracking-only 场景启动失败。
 
 - `sim2real/sim_env/loco_manip_with_hand.py`
-  - Name-mapped 29DoF policy bridge for a larger MuJoCo actuator set.
-  - Separate hand PD controller.
-  - Runtime stabilization for hand joints.
+  - 针对带手模型增加 name-mapped 29DoF policy bridge。
+  - 增加手部 PD 控制器。
+  - 对手部关节做运行时稳定化设置。
 
 - `sim2real/rl_policy/loco_manip/loco_manip_ee_tracking_test.py`
-  - Base 4DoF EE tracking evaluation.
+  - 4DoF 假手末端跟踪评测脚本。
 
 - `sim2real/rl_policy/loco_manip/loco_manip_ee_tracking_7dof_test.py`
-  - 7DoF position-only EE tracking evaluation.
+  - 7DoF 假手位置跟踪评测脚本。
 
 - `sim2real/rl_policy/loco_manip/loco_manip_ee_tracking_7dof_with_hand_test.py`
-  - 7DoF position-only EE tracking with the real hand model and hand open/close logic.
+  - 7DoF 带手位置跟踪评测脚本。
+  - 包含右手开合状态写入逻辑。
 
 - `sim2real/utils/arm_ik/robot_arm_ik_with_hand.py`
-  - With-hand IK wrapper.
-  - Locks lower body and finger joints, keeps both 7DoF arms active.
-  - Adds `L_ee` and `R_ee` frames using palm/grasp-center offsets.
+  - 带手模型 IK 包装器。
+  - 锁定下肢和手指关节，保持左右 7DoF 手臂可动。
+  - 增加 `L_ee` 和 `R_ee` frame，用于手掌 / 抓取中心末端定义。
 
 - `humanoidverse/data/robots/g1/g1_29dof_old_freebase_with_hand.xml`
-  - FALCON-compatible robot model with real hand joints appended.
+  - FALCON 兼容的带手 MuJoCo 机器人模型。
 
 - `humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_tracking.xml`
-  - Tracking-only scene without the valve.
+  - 不含阀门的带手跟踪测试场景。
 
 - `humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand.xml`
-  - Valve-capable scene for later grasp/turn experiments.
+  - 带阀门的带手场景，后续用于抓取和转动验证。
 
 - `sim2real/config/g1/g1_29dof_with_hand_tracking_overlay.yaml`
-  - Overlay config for the with-hand tracking test.
+  - 带手跟踪测试 overlay 配置。
+  - 定义带手场景、IK 资产路径、本体关节映射、手部关节、手部开合目标和 PD 参数。
 
-## Current Test Command
+## 当前推荐测试命令
 
-Preferred current test, 7DoF right-arm tracking with the real hand model:
+推荐优先运行 7DoF 带手末端跟踪：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -94,13 +97,26 @@ ELASTIC_LENGTH=-0.05 \
 ./launch_ee_tracking_7dof_with_hand_auto.sh
 ```
 
-## Launch Scripts and Usage
+该脚本会自动完成：
 
-All commands should be run from `sim2real/`. The `PYTHON_BIN` variable is recommended in this environment because the default `python` executable may not exist.
+1. 启动 MuJoCo。
+2. 设置弹力绳初始长度。
+3. 启动 policy。
+4. 自动进入 policy 控制。
+5. policy 稳定后松开弹力绳。
+6. 开始随机目标跟踪。
 
-### 4DoF Fake-Hand Tracking
+## 启动脚本
 
-Automatic one-command run:
+所有命令都应在 `sim2real/` 目录下执行。当前机器上建议显式指定：
+
+```bash
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python
+```
+
+### 4DoF 假手跟踪
+
+自动运行：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -110,7 +126,7 @@ ELASTIC_LENGTH=-0.05 \
 ./launch_ee_tracking_auto.sh
 ```
 
-Split terminals, if manual inspection is needed:
+拆分终端：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -127,14 +143,14 @@ DURATION_SEC=60 \
 ./launch_ee_tracking_policy.sh
 ```
 
-Default outputs:
+默认输出：
 
 - `/tmp/falcon_ee_tracking_markers.json`
 - `/tmp/falcon_ee_tracking_metrics.csv`
 
-### 7DoF Fake-Hand Tracking
+### 7DoF 假手跟踪
 
-Automatic one-command run:
+自动运行：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -144,7 +160,7 @@ ELASTIC_LENGTH=-0.05 \
 ./launch_ee_tracking_7dof_auto.sh
 ```
 
-Split terminals:
+拆分终端：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -161,14 +177,14 @@ DURATION_SEC=60 \
 ./launch_ee_tracking_7dof_policy.sh
 ```
 
-Default outputs:
+默认输出：
 
 - `/tmp/falcon_ee_tracking_7dof_markers.json`
 - `/tmp/falcon_ee_tracking_7dof_metrics.csv`
 
-### 7DoF With-Hand Tracking
+### 7DoF 带手跟踪
 
-Automatic one-command run:
+自动运行：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -178,7 +194,7 @@ ELASTIC_LENGTH=-0.05 \
 ./launch_ee_tracking_7dof_with_hand_auto.sh
 ```
 
-Split terminals:
+拆分终端：
 
 ```bash
 cd /home/lavine/project/FALCON/sim2real
@@ -195,85 +211,81 @@ DURATION_SEC=60 \
 ./launch_ee_tracking_7dof_with_hand_policy.sh
 ```
 
-Default outputs:
+默认输出：
 
 - `/tmp/falcon_ee_tracking_7dof_with_hand_markers.json`
 - `/tmp/falcon_ee_tracking_7dof_with_hand_metrics.csv`
 
-Useful environment variables:
+## 常用参数
 
-- `DURATION_SEC`: total policy-side run time in seconds.
-- `SAMPLE_PERIOD_SEC`: target resampling period; default is 5 seconds.
-- `SEED`: random target seed.
-- `X_RANGE`, `Y_RANGE`, `Z_RANGE`: base-frame target sampling ranges, formatted as `min,max`.
-- `ELASTIC_LENGTH`: initial elastic-band length. The current stable value is `-0.05`.
-- `ELASTIC_RELEASE_DELAY_AFTER_POLICY_START_SEC`: release delay after policy startup; default is 1 second.
-- `TRACKING_START_DELAY_SEC`: delay before random target sampling starts; default is 2 seconds for current automatic runs.
-- `HAND_CLOSE_ERROR_M`: with-hand only; right hand closes when the tracking error is below this threshold.
+- `DURATION_SEC`：总运行时间，单位秒。
+- `SAMPLE_PERIOD_SEC`：目标点重采样周期，默认 5 秒。
+- `SEED`：随机采样种子。
+- `X_RANGE` / `Y_RANGE` / `Z_RANGE`：base 坐标系下目标采样范围，格式为 `min,max`。
+- `ELASTIC_LENGTH`：初始弹力绳长度，当前稳定值是 `-0.05`。
+- `ELASTIC_RELEASE_DELAY_AFTER_POLICY_START_SEC`：policy 启动后多久松绳，默认 1 秒。
+- `TRACKING_START_DELAY_SEC`：松绳后多久开始目标点测试。
+- `HAND_CLOSE_ERROR_M`：带手版本中右手闭合阈值。
 
-Visualization:
+## 可视化和数据含义
 
-- Green sphere: sampled target point in the robot base frame.
-- Red sphere: current EE proxy point.
-- Their distance is the logged position-tracking error.
+- 绿色球：当前目标点。
+- 红色球：当前末端代理点。
+- CSV 中记录的误差：绿色球与红色球之间的欧氏距离。
+- P90 / P95：误差分布的 90% / 95% 分位数。例如 P95 为 2.5 cm，表示 95% 的样本误差不超过 2.5 cm。
 
-## Current Verification
+4DoF 和 7DoF 的末端定义不同：
 
-The latest repository-local asset regression ran successfully:
+- 4DoF 版本的 `R_ee` 是无手腕 IK 下的虚拟末端点，可用于早期简化测试。
+- 7DoF 版本的 Pinocchio `R_ee` 与 MuJoCo `right_EE_frame` 已按相同 offset 对齐，适合作为后续阀门任务的末端位置定义。
 
-- MuJoCo scene loads.
-- IK loads from repository-local URDF/meshes.
-- Policy starts automatically.
-- Elastic band releases after policy startup.
-- Hand open/close commands execute.
-- Right EE tracking logs are generated.
+## 当前验证结果
 
-Short regression result:
+仓库本地资产回归已经跑通：
 
-- Mean error: about 4.56 cm
-- RMS error: about 5.54 cm
-- Maximum error: about 18.25 cm, mainly target-switch transient
-- Final error: about 2.71 cm
+- MuJoCo 带手场景可以加载。
+- IK 可以从仓库本地 URDF 和 mesh 加载。
+- policy 可以自动启动。
+- policy 启动后弹力绳可以自动释放。
+- 手部开合命令可以执行。
+- 右臂末端跟踪 CSV 可以生成。
 
-Earlier 20-second regression result:
+已记录的典型结果：
 
-- Mean error: about 4.29 cm
-- RMS error: about 5.52 cm
-- P95 error: about 12.29 cm
-- Maximum error: about 18.68 cm
-- Final error: about 1.08 cm
+- 4DoF 假手长时间测试：整体均值约 2.92 cm，稳态均值约 1.33 cm，稳态 P95 约 2.00 cm。
+- 7DoF 假手测试：整体均值约 3.25 cm，稳态均值约 1.62 cm，稳态 P95 约 2.27 cm。
+- 7DoF 放大范围测试：整体均值约 4.19 cm，稳态均值约 1.77 cm，稳态 P95 约 2.58 cm。
+- 7DoF 带手短回归：均值约 4.56 cm，RMS 约 5.54 cm，最大误差约 18.25 cm，末端误差峰值主要来自目标切换瞬态。
 
-## Model Selection Decision
+## 模型选择记录
 
-We compared the idea of using the SONIC G1 model from NVlabs GR00T-WholeBodyControl. The repository contains many useful G1 variants, but the mesh assets are Git LFS files and the overall model family is still not guaranteed to match FALCON's trained MuJoCo setup.
+曾评估过直接引入 NVlabs GR00T-WholeBodyControl / SONIC 中的 G1 模型。该模型族有参考价值，但存在几个风险：
 
-The current decision is:
+- mesh 资产依赖 Git LFS，不适合直接作为当前仓库的稳定依赖。
+- XML / actuator / contact 设置不一定与 FALCON 已训练策略一致。
+- 完整替换模型可能改变本体质量、碰撞、关节阻尼、自由基座和 actuator 顺序。
 
-- Do not replace the full FALCON robot model with SONIC/Unitree XML.
-- Keep the FALCON-compatible base model.
-- Use external models only as references for hand subtree design if needed.
+当前决策：
 
-This is the safer approach because the trained FALCON policy is sensitive to actuator ordering, freebase actuators, contact/friction parameters, scene assumptions, and joint layout.
+- 不直接用 SONIC 或 Unitree 完整模型替换 FALCON 原始模型。
+- 保留 FALCON 兼容本体。
+- 只把外部模型作为手部结构和几何设计参考。
+- 手部 actuator 追加在原始 29DoF actuator 之后，策略控制映射用名称显式绑定。
 
-## Git Recommendation
+这个选择更适合当前方案，因为 FALCON 策略对 actuator 顺序、contact / friction、freebase actuator 和关节布局都比较敏感。
 
-Do not push this directly to `main`.
+## Git 记录
 
-Use a new branch, for example:
+本阶段改动已放在独立分支：
 
 ```bash
-git switch -c feature/with-hand-ee-tracking
+feature-with-hand-ee-tracking
 ```
 
-Reason:
+已提交并推送的阶段性提交：
 
-- This stage contains new model assets, new simulator paths, new evaluation scripts, and workflow automation.
-- Some launch scripts are currently ignored by `.gitignore` because of the global `*.sh` rule.
-- We should explicitly decide which generated evaluation outputs to track and which to leave local.
+```bash
+4c095bd Add with-hand EE tracking evaluation
+```
 
-Recommended commit scope:
-
-- Track source/config/model files required to reproduce the test.
-- Force-add the launch scripts if they should be part of the workflow.
-- Do not commit `.codex`.
-- Commit evaluation summaries only if we want the repository to preserve benchmark artifacts.
+后续建议继续在该分支上完善带手末端跟踪、阀门抓取和阀门旋转，不要直接推到 `main`。
