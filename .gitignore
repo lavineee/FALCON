@@ -54,11 +54,16 @@ humanoidverse/data/AMASS/
 AMASS/*
 
 *.sh
+!sim2real/launch_ee_tracking*.sh
 *.txt
 *.zip
 
 *.jpg
 *.pem
+
+.codex
+.codex/
+sim2real/eval_outputs/
 
 test.py
 

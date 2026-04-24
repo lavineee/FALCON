@@ -2,6 +2,9 @@ import logging
 logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 import sys
 import argparse
+import json
+import os
+import time
 from collections import deque
 from multiprocessing import Process, Queue
 from queue import Empty
@@ -11,7 +14,10 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import yaml
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+except ModuleNotFoundError:
+    plt = None
 
 sys.path.append("../")
 sys.path.append("./sim2real")
@@ -48,12 +54,20 @@ class LocoManipSimulator(BaseSimulator):
         self.valve_qadr = -1
 
         # live plot
-        self.enable_live_plot = True
+        self.enable_live_plot = bool(config.get("enable_live_plot", True)) and plt is not None
         self.plot_maxlen = 400
         self.plot_push_every = 1
         self.plot_counter = 0
         self.plot_queue = None
         self.plot_process = None
+
+        self.auto_elastic_length = config.get("auto_elastic_length", None)
+        self.auto_disable_elastic_after_s = config.get("auto_disable_elastic_after_s", None)
+        self._auto_elastic_disabled = False
+        self.sim_control_file = config.get("sim_control_file", None)
+        self._last_control_timestamp = 0.0
+        self.ee_marker_file = config.get("ee_marker_file", None)
+        self.ee_marker_radius = float(config.get("ee_marker_radius", 0.025))
 
         super().__init__(config)
 
@@ -203,6 +217,9 @@ class LocoManipSimulator(BaseSimulator):
 
         if self.config["ENABLE_ELASTIC_BAND"]:
             self.elastic_band = ElasticBand()
+            if self.auto_elastic_length is not None:
+                self.elastic_band.length = float(self.auto_elastic_length)
+                print(f"[AUTO] elastic length={self.elastic_band.length:.3f}")
             band_attached_link_name = self.config.get("BAND_ATTACHED_LINK", "torso_link")
             self.band_attached_link = self.mj_model.body(band_attached_link_name).id
         else:
@@ -214,15 +231,16 @@ class LocoManipSimulator(BaseSimulator):
 
         NUM_FEET_SENSORS = 8
         self.ffss_idx = len(self.mj_data.sensordata) - NUM_FEET_SENSORS * 3
-        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = True
+        self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
         self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
 
         # valve ids
         self.valve_jnt_id = mujoco.mj_name2id(
             self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, self.valve_joint_name
         )
-        self.valve_dof = self.mj_model.jnt_dofadr[self.valve_jnt_id]
-        self.valve_qadr = self.mj_model.jnt_qposadr[self.valve_jnt_id]
+        if self.valve_jnt_id != -1:
+            self.valve_dof = self.mj_model.jnt_dofadr[self.valve_jnt_id]
+            self.valve_qadr = self.mj_model.jnt_qposadr[self.valve_jnt_id]
         print(
             f"[VALVE] joint={self.valve_joint_name}, jnt_id={self.valve_jnt_id}, "
             f"dof={self.valve_dof}, qadr={self.valve_qadr}"
@@ -240,16 +258,113 @@ class LocoManipSimulator(BaseSimulator):
             if hasattr(self.mj_data, "eq_active"):
                 self.mj_data.eq_active[self.weld_id] = 0
 
+    def _base_to_world(self, pos_base):
+        pos_base = np.asarray(pos_base, dtype=float)
+        base_pos = self.mj_data.xpos[self.base_id].copy()
+        base_rot = self.mj_data.xmat[self.base_id].reshape(3, 3).copy()
+        return base_pos + base_rot @ pos_base
+
+    def _draw_ee_tracking_markers(self):
+        if not self.ee_marker_file or not hasattr(self.viewer, "user_scn"):
+            return
+        if not os.path.exists(self.ee_marker_file):
+            return
+        try:
+            with open(self.ee_marker_file, "r") as file:
+                marker_data = json.load(file)
+            target_base = marker_data.get("target_right_base")
+            current_base = marker_data.get("current_right_base")
+            if target_base is None or current_base is None:
+                return
+
+            geoms = self.viewer.user_scn.geoms
+            self.viewer.user_scn.ngeom = 0
+            for pos_base, rgba in (
+                (target_base, np.array([0.0, 0.8, 0.1, 0.75], dtype=float)),
+                (current_base, np.array([0.9, 0.1, 0.1, 0.75], dtype=float)),
+            ):
+                geom_id = self.viewer.user_scn.ngeom
+                if geom_id >= len(geoms):
+                    break
+                mujoco.mjv_initGeom(
+                    geoms[geom_id],
+                    mujoco.mjtGeom.mjGEOM_SPHERE,
+                    np.array([self.ee_marker_radius, 0.0, 0.0], dtype=float),
+                    self._base_to_world(pos_base),
+                    np.eye(3).reshape(-1),
+                    rgba,
+                )
+                self.viewer.user_scn.ngeom += 1
+        except Exception as exc:
+            if not hasattr(self, "_ee_marker_warned"):
+                print(f"[EE_MARKER] disabled after read/draw error: {exc}")
+                self._ee_marker_warned = True
+
+    def _maybe_disable_elastic_from_control_file(self):
+        if (
+            not self.config["ENABLE_ELASTIC_BAND"]
+            or self.elastic_band is None
+            or self._auto_elastic_disabled
+            or not self.sim_control_file
+            or not os.path.exists(self.sim_control_file)
+        ):
+            return
+        try:
+            with open(self.sim_control_file, "r") as file:
+                control = json.load(file)
+        except Exception:
+            return
+
+        timestamp = float(control.get("timestamp", 0.0))
+        if timestamp <= self._last_control_timestamp:
+            return
+        if not control.get("policy_started", False):
+            self._last_control_timestamp = timestamp
+            return
+
+        delay_value = control.get("disable_elastic_after_policy_start_s", None)
+        if delay_value is None:
+            return
+        delay_s = float(delay_value)
+        if delay_s < 0.0:
+            return
+        if time.time() - timestamp < delay_s:
+            return
+
+        self.elastic_band.enable = False
+        self._auto_elastic_disabled = True
+        self._last_control_timestamp = timestamp
+        if hasattr(self, "band_attached_link"):
+            self.mj_data.xfrc_applied[self.band_attached_link, :3] = 0.0
+        print(f"[AUTO] elastic band OFF after policy start + {delay_s:.2f}s")
+
     def sim_step(self):
         self.robot_bridge.PublishLowState()
         if self.robot_bridge.joystick:
             self.robot_bridge.PublishWirelessController()
+
+        self._maybe_disable_elastic_from_control_file()
+
+        if (
+            self.config["ENABLE_ELASTIC_BAND"]
+            and self.elastic_band is not None
+            and self.auto_disable_elastic_after_s is not None
+            and not self._auto_elastic_disabled
+            and self.t >= float(self.auto_disable_elastic_after_s)
+        ):
+            self.elastic_band.enable = False
+            self._auto_elastic_disabled = True
+            if hasattr(self, "band_attached_link"):
+                self.mj_data.xfrc_applied[self.band_attached_link, :3] = 0.0
+            print("[AUTO] elastic band OFF")
 
         if self.config["ENABLE_ELASTIC_BAND"]:
             if self.elastic_band.enable:
                 self.mj_data.xfrc_applied[self.band_attached_link, :3] = self.elastic_band.Advance(
                     self.mj_data.qpos[:3], self.mj_data.qvel[:3]
                 )
+            else:
+                self.mj_data.xfrc_applied[self.band_attached_link, :3] = 0.0
 
         if self.config["ENABLE_ELASTIC_BAND"] and self.elastic_band.estimate:
             self.EE_xfrc = self.elastic_band.apply_force
@@ -289,6 +404,7 @@ class LocoManipSimulator(BaseSimulator):
             self.push_live_plot(self.t, torque_now, valve_angle, valve_vel)
 
         self.t += self.sim_dt
+        self._draw_ee_tracking_markers()
 
 
 if __name__ == "__main__":

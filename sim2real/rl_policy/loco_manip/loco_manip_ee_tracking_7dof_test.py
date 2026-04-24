@@ -1,0 +1,237 @@
+import argparse
+import sys
+import time
+
+import numpy as np
+import pinocchio as pin
+import yaml
+from termcolor import colored
+
+sys.path.append("../")
+sys.path.append("./rl_policy")
+
+from sim2real.rl_policy.loco_manip.loco_manip_ee_tracking_test import (
+    LocoManipEETrackingTestPolicy,
+    _parse_range,
+)
+from sim2real.utils.arm_ik.robot_arm_ik import G1_29_ArmIK
+
+
+class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
+    """Right hand-pad position tracking test using all 7 right-arm DoFs."""
+
+    def init_upper_body_controller(self):
+        if self.config["ROBOT_TYPE"] != "g1_29dof":
+            self.logger.error("Unsupported robot type: %s", self.config["ROBOT_TYPE"])
+            return
+
+        self.upper_body_controller = G1_29_ArmIK(
+            Unit_Test=False, Visualization=False, robot_config=self.config
+        )
+        # Position-only test: keep the full 7-DoF arms, but remove orientation
+        # tracking from the IK objective for this evaluation.
+        self.upper_body_controller.opti.minimize(
+            50 * self.upper_body_controller.translational_cost
+            + 0.02 * self.upper_body_controller.regularization_cost
+            + 0.1 * self.upper_body_controller.smooth_cost
+        )
+
+        self.waypoint_index = 0
+        self.speed_factor = 0.05
+        self.base_z_offset = 0.8
+        self.degrees = 0
+        self.theta = np.radians(self.degrees)
+        self.EE_left_R = np.array(
+            [
+                [np.cos(-self.theta), -np.sin(-self.theta), 0],
+                [np.sin(-self.theta), np.cos(-self.theta), 0],
+                [0, 0, 1],
+            ]
+        )
+        self.EE_right_R = np.array(
+            [
+                [np.cos(self.theta), -np.sin(self.theta), 0],
+                [np.sin(self.theta), np.cos(self.theta), 0],
+                [0, 0, 1],
+            ]
+        )
+        self.EE_left_x = 0.30
+        self.EE_right_x = 0.30
+        self.EE_left_y = 0.13
+        self.EE_right_y = -0.13
+        self.EE_left_z = 0.08
+        self.EE_right_z = 0.08
+        self.update_waypoints()
+        self.EE_efrc_L = np.array([0, 0, 0, 0, 0, 0])
+        self.EE_efrc_R = np.array([0, 0, 0, 0, 0, 0])
+        self.upper_body_controller.set_initial_poses(
+            self.waypoints_left[0].translation,
+            self.waypoints_right[0].translation,
+            self.waypoints_left[0].rotation,
+            self.waypoints_right[0].rotation,
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.full_upper_joint_indices = [
+            self.dof_names.index(name) for name in self.config["dof_names_upper_body"]
+        ]
+        self.right_ee_frame_id = self.upper_body_controller.reduced_robot.model.getFrameId("R_ee")
+
+    def _send_7dof_policy_action(self):
+        cmd_q = np.zeros(self.num_dofs)
+        cmd_dq = np.zeros(self.num_dofs)
+        cmd_tau = np.zeros(self.num_dofs)
+
+        robot_state_data = self.state_processor.robot_state_data
+        if self.upper_body_controller:
+            upper_body_qpos, _ = self.upper_body_controller.get_q_tau(
+                self.waypoints_left[0],
+                self.waypoints_right[0],
+                self.EE_efrc_L,
+                self.EE_efrc_R,
+            )
+            self.ref_upper_dof_pos[0, :] = upper_body_qpos[: self.num_upper_dofs]
+
+        scaled_policy_action = self.rl_inference(robot_state_data)
+        if self.get_ready_state:
+            q_target = self.get_init_target(robot_state_data)
+            self.init_count = min(self.init_count, 500)
+        elif not self.use_policy_action:
+            q_target = robot_state_data[:, 7 : 7 + self.num_dofs]
+        else:
+            q_target = scaled_policy_action + self.default_dof_angles
+
+        if self.motor_pos_lower_limit_list and self.motor_pos_upper_limit_list:
+            q_target[0] = np.clip(
+                q_target[0],
+                self.motor_pos_lower_limit_list,
+                self.motor_pos_upper_limit_list,
+            )
+
+        cmd_q = q_target[0]
+        self.command_sender.send_command(
+            cmd_q, cmd_dq, cmd_tau, robot_state_data[0, 7 : 7 + self.num_dofs]
+        )
+
+    def policy_action(self):
+        wall_elapsed = time.perf_counter() - self._wall_start_t
+        if self.duration_s is not None and wall_elapsed >= self.duration_s:
+            raise KeyboardInterrupt
+
+        robot_state_data = self.state_processor.robot_state_data
+        if robot_state_data is None:
+            if wall_elapsed >= self._next_wait_log_t:
+                self._next_wait_log_t = wall_elapsed + 2.0
+                self.logger.info(colored("[EE_TRACK_7DOF] waiting for sim lowstate...", "yellow"))
+            return
+
+        if self.auto_workflow:
+            ready_for_tracking = self._auto_workflow_ready_for_tracking(wall_elapsed)
+            self._send_7dof_policy_action()
+            if not ready_for_tracking:
+                return
+            self._maybe_resample_target()
+            self._record_error(robot_state_data)
+            return
+
+        if self.manual_start and not self.use_policy_action:
+            if wall_elapsed >= self._next_start_log_t:
+                self._next_start_log_t = wall_elapsed + 2.0
+                self.logger.info(colored("[EE_TRACK_7DOF] waiting for manual ] policy start...", "yellow"))
+            return
+
+        if self.manual_start and not self._started_policy:
+            self._started_policy = True
+            self._policy_start_wall_t = time.perf_counter()
+
+        if not self.manual_start and not self._started_policy:
+            self._handle_start_policy()
+            self._started_policy = True
+            self._policy_start_wall_t = time.perf_counter()
+            self._write_control_file(
+                {
+                    "policy_started": True,
+                    "timestamp": time.time(),
+                    "policy_start_wall_time": self._policy_start_wall_t,
+                    "disable_elastic_after_policy_start_s": self.elastic_release_delay_after_policy_start_s,
+                }
+            )
+
+        self._send_7dof_policy_action()
+        if (
+            self._policy_start_wall_t is not None
+            and time.perf_counter() - self._policy_start_wall_t < self.tracking_start_delay_s
+        ):
+            return
+        self._maybe_resample_target()
+        self._record_error(robot_state_data)
+
+    def _current_right_fake_ee_base(self, robot_state_data):
+        full_q = robot_state_data[0, 7 : 7 + self.num_dofs]
+        upper_q = full_q[self.full_upper_joint_indices]
+        model = self.upper_body_controller.reduced_robot.model
+        data = self.upper_body_controller.data
+        pin.framesForwardKinematics(model, data, upper_q)
+        pin.updateFramePlacements(model, data)
+        return np.array(data.oMf[self.right_ee_frame_id].translation, dtype=float).reshape(3)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Right hand-pad 7-DoF tracking test")
+    parser.add_argument("--config", type=str, default="config/g1/g1_29dof_falcon.yaml")
+    parser.add_argument("--model_path", type=str, default=None)
+    parser.add_argument("--marker_file", type=str, default="/tmp/falcon_ee_tracking_7dof_markers.json")
+    parser.add_argument("--log_file", type=str, default="/tmp/falcon_ee_tracking_7dof_metrics.csv")
+    parser.add_argument("--sample_period_s", type=float, default=5.0)
+    parser.add_argument("--x_range", type=_parse_range, default=(0.20, 0.42))
+    parser.add_argument("--y_range", type=_parse_range, default=(-0.26, -0.04))
+    parser.add_argument("--z_range", type=_parse_range, default=(-0.02, 0.24))
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--duration_s", type=float, default=None)
+    parser.add_argument(
+        "--auto_start_policy",
+        action="store_true",
+        help="Start policy automatically instead of waiting for manual ] key.",
+    )
+    parser.add_argument(
+        "--auto_workflow",
+        action="store_true",
+        help="Wait for sim foot contact, start policy, wait for elastic release, then sample targets.",
+    )
+    parser.add_argument("--sim_status_file", type=str, default="/tmp/falcon_sim_status_7dof.json")
+    parser.add_argument("--sim_control_file", type=str, default="/tmp/falcon_sim_control_7dof.json")
+    parser.add_argument("--status_timeout_s", type=float, default=2.0)
+    parser.add_argument("--tracking_delay_after_elastic_off_s", type=float, default=0.5)
+    parser.add_argument("--tracking_start_delay_s", type=float, default=0.0)
+    parser.add_argument("--elastic_release_delay_after_policy_start_s", type=float, default=None)
+    args = parser.parse_args()
+
+    with open(args.config) as file:
+        config = yaml.safe_load(file)
+
+    config["disable_keyboard_listener"] = bool(args.auto_start_policy or args.auto_workflow)
+    model_path = args.model_path if args.model_path else config.get("model_path")
+    if not model_path:
+        raise ValueError("model_path must be provided either via --model_path or config model_path")
+
+    policy = LocoManipEETracking7DofTestPolicy(
+        config,
+        model_path,
+        marker_file=args.marker_file,
+        log_file=args.log_file,
+        sample_period_s=args.sample_period_s,
+        x_range=args.x_range,
+        y_range=args.y_range,
+        z_range=args.z_range,
+        seed=args.seed,
+        duration_s=args.duration_s,
+        manual_start=not (args.auto_start_policy or args.auto_workflow),
+        auto_workflow=args.auto_workflow,
+        sim_status_file=args.sim_status_file,
+        sim_control_file=args.sim_control_file,
+        status_timeout_s=args.status_timeout_s,
+        tracking_delay_after_elastic_off_s=args.tracking_delay_after_elastic_off_s,
+        tracking_start_delay_s=args.tracking_start_delay_s,
+        elastic_release_delay_after_policy_start_s=args.elastic_release_delay_after_policy_start_s,
+    )
+    policy.run()

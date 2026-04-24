@@ -1,0 +1,87 @@
+# Overlay for the with-hand MuJoCo EE tracking test.
+# Load this on top of config/g1/g1_29dof_falcon.yaml.
+
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_tracking.xml"
+ARM_IK_ASSET_ROOT: "../humanoidverse/data/robots/g1"
+ARM_IK_ASSET_FILE: "../humanoidverse/data/robots/g1/g1_29dof_with_hand_rev_1_0.urdf"
+
+# Keep the policy/SDK side as a 29-DoF robot. These names are in the
+# original no-hand MuJoCo actuator order, not the 43-actuator with-hand order.
+policy_motor_joint_names:
+  - left_hip_pitch_joint
+  - left_hip_roll_joint
+  - left_hip_yaw_joint
+  - left_knee_joint
+  - left_ankle_pitch_joint
+  - left_ankle_roll_joint
+  - right_hip_pitch_joint
+  - right_hip_roll_joint
+  - right_hip_yaw_joint
+  - right_knee_joint
+  - right_ankle_pitch_joint
+  - right_ankle_roll_joint
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+  - left_shoulder_pitch_joint
+  - left_shoulder_roll_joint
+  - left_shoulder_yaw_joint
+  - left_elbow_joint
+  - left_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_shoulder_pitch_joint
+  - right_shoulder_roll_joint
+  - right_shoulder_yaw_joint
+  - right_elbow_joint
+  - right_wrist_roll_joint
+  - right_wrist_pitch_joint
+  - right_wrist_yaw_joint
+
+# Tracking point: a simple palm/grasp-center proxy in the wrist-yaw frame.
+# It is centered between the index and middle finger bases, slightly ahead of
+# the palm. This is only for position tracking; orientation is still ignored.
+left_ee_local_offset: [0.15, 0.0046, 0.0]
+right_ee_local_offset: [0.15, -0.0046, 0.0]
+
+left_hand_link_name: "left_wrist_yaw_link"
+right_hand_link_name: "right_wrist_yaw_link"
+
+left_hand_joint_names:
+  - left_hand_thumb_0_joint
+  - left_hand_thumb_1_joint
+  - left_hand_thumb_2_joint
+  - left_hand_middle_0_joint
+  - left_hand_middle_1_joint
+  - left_hand_index_0_joint
+  - left_hand_index_1_joint
+right_hand_joint_names:
+  - right_hand_thumb_0_joint
+  - right_hand_thumb_1_joint
+  - right_hand_thumb_2_joint
+  - right_hand_index_0_joint
+  - right_hand_index_1_joint
+  - right_hand_middle_0_joint
+  - right_hand_middle_1_joint
+
+left_hand_open_q: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+right_hand_open_q: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# Conservative close targets. The right hand is the one used in this test.
+left_hand_close_q: [0.55, 0.45, 0.80, -0.90, -0.90, -0.90, -0.90]
+right_hand_close_q: [0.55, 0.45, -0.80, 0.90, 0.90, 0.90, 0.90]
+
+hand_kp: 3.0
+hand_kd: 0.08
+policy_joint_damping: 0.05
+policy_joint_armature: 0.01
+policy_joint_frictionloss: 0.2
+wrist_joint_frictionloss: 0.1
+hand_joint_damping: 0.2
+hand_joint_armature: 0.003
+disable_hand_finger_collision_for_tracking: true
+left_hand_effort_limits: [2.0, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
+right_hand_effort_limits: [2.0, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]
+right_hand_default_state: "open"
+left_hand_default_state: "open"
+hand_close_error_m: 0.035
