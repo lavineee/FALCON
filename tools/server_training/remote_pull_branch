@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="${REMOTE_HOST:-lab-tang-u2204}"
+REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/FALCON}"
+BRANCH="${BRANCH:-$(git branch --show-current)}"
+
+if [[ -z "${BRANCH}" ]]; then
+  echo "BRANCH is empty. Set BRANCH=<branch-name>." >&2
+  exit 2
+fi
+
+echo "Remote host: ${REMOTE_HOST}"
+echo "Remote repo: ${REMOTE_REPO}"
+echo "Branch: ${BRANCH}"
+
+ssh "${REMOTE_HOST}" "set -euo pipefail; cd '${REMOTE_REPO}'; git fetch origin '${BRANCH}'; git switch '${BRANCH}'; git pull --ff-only origin '${BRANCH}'; git status --short"

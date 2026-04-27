@@ -14,6 +14,7 @@ import time
 import os
 import statistics
 from collections import deque
+from pathlib import Path
 from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
@@ -104,6 +105,85 @@ class PPOMultiActorCritic(PPO):
                 lr=self.critic_learning_rates[key],
                 weight_decay=self.config.get('weight_decay', 0.01),  # L2 regularization
             )
+
+    def setup(self):
+        super().setup()
+        self._maybe_warm_start_actor_only()
+
+    def _maybe_warm_start_actor_only(self):
+        warm_start_cfg = self.config.get("warm_start", None)
+        if not warm_start_cfg or not bool(warm_start_cfg.get("enabled", False)):
+            self.warm_start_report = None
+            return
+
+        checkpoint_path = warm_start_cfg.get("checkpoint_path", None)
+        if checkpoint_path is None:
+            raise ValueError("algo.config.warm_start.enabled=True requires checkpoint_path")
+
+        report = self._load_actor_only_warm_start(checkpoint_path, warm_start_cfg)
+        self.warm_start_report = report
+        logger.info(f"Actor-only warm start report: {report}")
+
+    def _load_actor_only_warm_start(self, checkpoint_path, warm_start_cfg):
+        checkpoint_path = str(Path(checkpoint_path).expanduser())
+        loaded_dict = torch.load(checkpoint_path, map_location="cpu")
+        report = {
+            "checkpoint_path": checkpoint_path,
+            "loaded": {},
+            "skipped": {},
+            "missing": {},
+            "unexpected": {},
+            "load_actors": bool(warm_start_cfg.get("load_actors", True)),
+            "load_critics": bool(warm_start_cfg.get("load_critics", False)),
+            "load_optimizer": bool(warm_start_cfg.get("load_optimizer", False)),
+            "strict_actor_shape": bool(warm_start_cfg.get("strict_actor_shape", True)),
+        }
+
+        if not report["load_actors"]:
+            report["skipped"]["actor_model_state_dict"] = "disabled"
+            return report
+
+        actor_state_dict = loaded_dict.get("actor_model_state_dict", {})
+        for key in self.keys:
+            source_state = actor_state_dict.get(key, {})
+            target_state = self.actors[key].state_dict()
+            load_state = {}
+            skipped = {}
+            unexpected = []
+
+            for param_key, source_value in source_state.items():
+                if param_key not in target_state:
+                    unexpected.append(param_key)
+                    continue
+                if tuple(source_value.shape) != tuple(target_state[param_key].shape):
+                    skipped[param_key] = {
+                        "reason": "shape_mismatch",
+                        "checkpoint_shape": tuple(source_value.shape),
+                        "target_shape": tuple(target_state[param_key].shape),
+                    }
+                    continue
+                load_state[param_key] = source_value
+
+            merged_state = dict(target_state)
+            merged_state.update(load_state)
+            self.actors[key].load_state_dict(merged_state, strict=True)
+
+            report["loaded"][key] = {
+                "keys": sorted(load_state.keys()),
+                "count": len(load_state),
+            }
+            report["skipped"][key] = skipped
+            report["missing"][key] = sorted(set(target_state.keys()) - set(load_state.keys()))
+            report["unexpected"][key] = sorted(unexpected)
+
+        if not report["load_critics"] and "critic_model_state_dict" in loaded_dict:
+            report["skipped"]["critic_model_state_dict"] = "disabled_by_actor_only_warm_start"
+        if not report["load_optimizer"]:
+            if "actor_optimizer_state_dict" in loaded_dict:
+                report["skipped"]["actor_optimizer_state_dict"] = "disabled_by_actor_only_warm_start"
+            if "critic_optimizer_state_dict" in loaded_dict:
+                report["skipped"]["critic_optimizer_state_dict"] = "disabled_by_actor_only_warm_start"
+        return report
 
     def _setup_storage(self):
         self.storage = RolloutStorage(self.env.num_envs, self.num_steps_per_env, device=self.device)

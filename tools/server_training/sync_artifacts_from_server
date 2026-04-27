@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="${REMOTE_HOST:-lab-tang-u2204}"
+REMOTE_PATH="${REMOTE_PATH:-}"
+LOCAL_DIR="${LOCAL_DIR:-artifacts/server_runs}"
+DRY_RUN="${DRY_RUN:-0}"
+
+if [[ -z "${REMOTE_PATH}" ]]; then
+  echo "Set REMOTE_PATH to the server run directory to copy." >&2
+  echo "Example: REMOTE_PATH=/home/ubuntu/FALCON/logs/server_warmstart_6d_wrench/<run-dir>" >&2
+  exit 2
+fi
+
+mkdir -p "${LOCAL_DIR}"
+
+RSYNC_ARGS=(-avh --progress)
+if [[ "${DRY_RUN}" == "1" ]]; then
+  RSYNC_ARGS+=(--dry-run)
+fi
+
+echo "Remote: ${REMOTE_HOST}:${REMOTE_PATH}"
+echo "Local: ${LOCAL_DIR}/"
+rsync "${RSYNC_ARGS[@]}" "${REMOTE_HOST}:${REMOTE_PATH%/}/" "${LOCAL_DIR}/$(basename "${REMOTE_PATH}")/"

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="${REMOTE_HOST:-lab-tang-u2204}"
+REMOTE_REPO="${REMOTE_REPO:-/home/ubuntu/FALCON}"
+LOCAL_REPO="${LOCAL_REPO:-$PWD}"
+DRY_RUN="${DRY_RUN:-1}"
+DELETE="${DELETE:-0}"
+INCLUDE_CHECKPOINT="${INCLUDE_CHECKPOINT:-1}"
+
+RSYNC_ARGS=(-avh --progress)
+if [[ "${DRY_RUN}" == "1" ]]; then
+  RSYNC_ARGS+=(--dry-run)
+fi
+if [[ "${DELETE}" == "1" ]]; then
+  RSYNC_ARGS+=(--delete)
+fi
+
+EXCLUDES=(
+  ".git/"
+  ".codex/"
+  "__pycache__/"
+  "*.pyc"
+  ".pytest_cache/"
+  ".mypy_cache/"
+  ".ruff_cache/"
+  "logs/"
+  "logs_eval/"
+  "runs/"
+  "outputs/"
+  "results/"
+  "artifacts/"
+  "hydra_logs/"
+  "wandb/"
+  "debug_logs/"
+)
+
+if [[ "${INCLUDE_CHECKPOINT}" != "1" ]]; then
+  EXCLUDES+=("*.pt" "*.pth" "*.ckpt")
+fi
+
+for item in "${EXCLUDES[@]}"; do
+  RSYNC_ARGS+=(--exclude "${item}")
+done
+
+echo "Local repo: ${LOCAL_REPO}"
+echo "Remote: ${REMOTE_HOST}:${REMOTE_REPO}"
+echo "DRY_RUN=${DRY_RUN}"
+echo "DELETE=${DELETE}"
+echo "INCLUDE_CHECKPOINT=${INCLUDE_CHECKPOINT}"
+
+ssh "${REMOTE_HOST}" "mkdir -p '${REMOTE_REPO}'"
+rsync "${RSYNC_ARGS[@]}" "${LOCAL_REPO%/}/" "${REMOTE_HOST}:${REMOTE_REPO%/}/"
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo
+  echo "Dry run only. Re-run with DRY_RUN=0 to sync."
+fi

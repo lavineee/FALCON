@@ -1,0 +1,17 @@
+# @package _global_
+
+defaults:
+  - /algo: ppo_decoupled_wbc_ma
+  - /env: decoupled_locomotion_stand_height_waist_wbc_ma_6d_wrench
+
+experiment_name: TEST_DecoupledLocomotion_6DWrench
+
+algo:
+  config:
+    warm_start:
+      enabled: false
+      checkpoint_path: null
+      load_actors: true
+      load_critics: false
+      load_optimizer: false
+      strict_actor_shape: true

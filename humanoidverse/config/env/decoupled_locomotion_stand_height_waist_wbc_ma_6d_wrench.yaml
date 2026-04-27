@@ -1,0 +1,127 @@
+# @package _global_
+
+defaults:
+  - legged_base
+
+env:
+  _target_: humanoidverse.envs.decoupled_locomotion.decoupled_locomotion_stand_height_waist_wbc_ma_6d_wrench.LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench
+  config:
+    max_episode_length_s: 20
+    locomotion_obs_scales:
+      lin_vel: 1.0
+      ang_vel: 1.0
+      dof_pos: 1.0
+      dof_vel: 1.0
+      humanoid_commands_scale: 1.0
+    locomotion_command_ranges:
+      lin_vel_x: [-1.0, 1.0]
+      lin_vel_y: [-1.0, 1.0]
+      ang_vel_yaw: [-1.0, 1.0]
+      heading: [-3.14, 3.14]
+      base_height: [-0.25, 0.0]
+
+    stand_prob: 0.4
+    tapping_in_place_prob: 0.0
+
+    fix_upper_body_prob: 0.3
+    apply_waist_roll_only_when_stance: True
+    apply_waist_pitch_only_when_stance: True
+    apply_waist_yaw_only_when_stance: True
+    fix_waist_yaw: True
+    fix_waist_roll: True
+    fix_waist_pitch: True
+    fix_waist_yaw_range: [-1.0, 1.0]
+    fix_waist_roll_range: [-0.0, 0.0]
+    fix_waist_pitch_range: [-0.0, 0.0]
+    zero_fix_waist_yaw_prob: 0.1
+    zero_fix_waist_roll_prob: 1.0
+    zero_fix_waist_pitch_prob: 1.0
+
+    resample_motion_when_training: True
+    resample_time_interval_s: 2000
+    locomotion_command_resampling_time: 10.0
+    obs_history:
+      history_len: 0
+
+    residual_upper_body_action: True
+
+    wrench:
+      enabled: true
+      mode: force_torque
+      sample_frame: hand_local
+      apply_in_physics_step: true
+      apply_links: ["left_rubber_hand", "right_rubber_hand"]
+
+      force_range_n:
+        x: [-40.0, 40.0]
+        y: [-40.0, 40.0]
+        z: [-50.0, 5.0]
+
+      torque_range_nm:
+        x: [-2.0, 2.0]
+        y: [-2.0, 2.0]
+        z: [-2.0, 2.0]
+
+      curriculum_mode: adaptive
+      fixed_force_scale: 0.10
+      fixed_torque_scale: 0.05
+
+      force_scale_initial: 0.1
+      force_scale_min: 0.0
+      force_scale_max: 1.0
+      force_scale_floor_during_warmup: 0.05
+      force_scale_min_after_warmup: 0.05
+      force_curriculum_warmup_iterations: 20
+      force_curriculum_allow_down_after_iterations: 20
+      disable_force_down_until_iterations: 100
+      force_scale_down: 0.005
+      force_scale_up: 0.01
+
+      torque_scale_initial: 0.05
+      torque_scale_min: 0.0
+      torque_scale_max: 1.0
+      torque_scale_start_after_force_scale: 0.3
+      torque_scale_floor_during_warmup: 0.03
+      torque_scale_min_after_warmup: 0.03
+      torque_curriculum_warmup_iterations: 20
+      torque_curriculum_allow_down_after_iterations: 20
+      disable_torque_down_until_iterations: 100
+      torque_scale_down: 0.002
+      torque_scale_up: 0.005
+
+      resample_duration_steps: [150, 250]
+      piecewise_constant: true
+      use_final_wrench_lpf: true
+      lpf_alpha: 0.05
+
+      zero_force_prob: [0.25, 0.25, 0.25]
+      zero_torque_prob: [0.5, 0.5, 0.5]
+
+      torque_limit_aware_bound: true
+      joint_limit_margin: 0.8
+
+    termination:
+      terminate_by_contact: False
+      terminate_by_gravity: True
+      terminate_by_low_height: True
+      terminate_when_close_to_dof_pos_limit: False
+      terminate_when_close_to_dof_vel_limit: False
+      terminate_when_close_to_torque_limit: False
+      terminate_when_motion_end: True
+      terminate_when_low_upper_dof_tracking: False
+
+    termination_scales:
+      termination_min_base_height : 0.3
+      termination_gravity_x : 0.8
+      termination_gravity_y : 0.8
+      termination_close_to_dof_pos_limit : 0.98
+      termination_close_to_dof_vel_limit : 0.98
+      termination_close_to_torque_limit : 0.98
+      terminate_when_low_upper_dof_tracking_threshold: 0.1
+
+log_task_name: decoupled_locomotion
+
+eval_overrides:
+  env:
+    config:
+      max_episode_length_s: 100000
