@@ -18,10 +18,11 @@ from sim2real.utils.arm_ik.robot_arm_ik_with_hand import G1_29_WithHandArmIK
 
 
 class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolicy):
-    """Right palm/grasp-center position tracking test on the with-hand model."""
+    """带手模型上的右掌心/抓取中心位置跟踪测试。"""
 
     def _init_keyboard_handler(self):
         if self.config.get("disable_keyboard_listener", False):
+            # 自动测试时不启动键盘监听，避免后台 policy 等待终端输入。
             self.use_joystick = False
             self.logger.info("Keyboard listener disabled")
             return
@@ -32,6 +33,7 @@ class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolic
             self.logger.error("Unsupported robot type: %s", self.config["ROBOT_TYPE"])
             return
 
+        # IK 接口沿用 7DoF 版本，但 URDF 和 R_ee frame 已换成带手模型。
         self.upper_body_controller = G1_29_WithHandArmIK(
             Unit_Test=False,
             Visualization=False,
@@ -94,6 +96,7 @@ class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolic
         old_target_id = self._target_id
         super()._maybe_resample_target()
         if self._target_id != old_target_id:
+            # 每个新目标都先张手，接近到阈值后再闭手，便于观察开合逻辑。
             self._right_hand_closed_for_target = False
             self._write_hand_state("open")
             self.logger.info(colored("[EE_TRACK_HAND] right hand open for approach", "cyan"))
@@ -103,6 +106,7 @@ class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolic
         if self._right_hand_closed_for_target or not self._window_errors:
             return
         if self._window_errors[-1] <= self.hand_close_error_m:
+            # 这里验证的是手部开/合控制链路，不等价于真实抓握接触。
             self._right_hand_closed_for_target = True
             self._write_hand_state("close")
             self.logger.info(

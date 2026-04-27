@@ -1,0 +1,46 @@
+# Extra overlay for the staged with-hand valve task.
+# Load after:
+#   1) g1_29dof_with_hand_tracking_overlay.yaml
+#   2) g1_29dof_with_hand_tracking_tuned_overlay.yaml
+
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_task.xml"
+
+# MuJoCo privileged geometry names. The policy reads their current world pose
+# from sim_status_file through a provider abstraction; deployment can replace
+# that provider with depth-camera perception output in the robot base frame.
+valve_center_site_name: "valve_center_site"
+valve_grasp_site_name: "right_hand_valve_site"
+valve_wheel_body_name: "valve_wheel"
+valve_attach_equality_name: "right_hand_valve_connect"
+
+# Hard MuJoCo equality attachment is useful only as a diagnostic shortcut. Keep
+# it disabled by default so the first-stage valve task evaluates approach,
+# hand closing, and free-space valve-path tracking without hiding tracking error
+# behind an unrealizable constraint.
+valve_attachment_mode: "none"  # none | connect
+disable_hand_finger_collision_for_tracking: true
+
+valve_pregrasp_offset_m: 0.12
+valve_pregrasp_error_m: 0.05
+valve_grasp_error_m: 0.025
+valve_grasp_target_bias_base_m: [0.007, -0.006, 0.028]
+valve_close_wait_s: 0.8
+valve_weld_settle_s: 1.0
+valve_task_start_delay_s: 0.5
+valve_hold_s: 2.0
+valve_turn_actual_tolerance_deg: 1.5
+valve_release_on_done: true
+valve_stop_after_done_s: 1.0
+
+# Match valve_body_include.xml by default. Lower these only for explicit
+# low-friction debugging runs.
+valve_joint_damping: 0.15
+valve_joint_frictionloss: 0.25
+
+# Keep the first turn small. Increase after approach/grasp/weld is repeatable.
+valve_enable_turn: true
+valve_turn_target_deg: -8.0
+valve_turn_speed_deg: 2.0
+
+sim_status_write_interval_s: 0.02
+foot_contact_force_threshold: 20.0

@@ -395,7 +395,382 @@ ${PYTHON_BIN:-python} rl_policy/loco_manip/loco_manip_valve_turn.py \
 5. 需要环境侧主动扭矩时按 `K`，并用 `U` / `I` / `O` 调整。
 6. 需要策略侧主动旋转轨迹时，在 policy 终端按 `l` 或 `;`。
 
+## 带手阀门角度闭环跟踪 baseline
+
+这个测试用于验证“接触建立之后，机器人能否按照给定角度带动阀门转动”。当前它不是手指真实抓握，而是使用 MuJoCo equality `connect` 做软点连接：连接右掌心抓取点和阀门上的固定抓取点。这个设置能降低硬 `weld` 对控制结果的干扰，但仍然没有模拟摩擦、滑移、力闭合和手指包络。
+
+控制逻辑：
+
+1. 机器人接近阀门预抓取点。
+2. 右手闭合。
+3. 打开软 `connect`。
+4. 根据阀门中心、轴线和当前 hinge angle 生成圆弧末端目标。
+5. 用阀门角度闭环修正圆弧命令：`参考角 - 实际角` 越大，末端命令点越向目标方向提前。
+6. 通过 7DoF IK 和原 FALCON policy 执行。
+
+MuJoCo 可视化约定：
+
+- 绿色点：当前末端目标点。
+- 红色点：当前右掌心代理点。
+- 蓝色点：阀门中心。
+- 紫色线：本段最终目标角度方向。
+- 黄色线和黄色圆弧：闭环命令角度方向和轨迹。
+- 红色线：阀门实际角度方向。
+- 窗口内文字：`target / ref / cmd / actual` 角度。
+
+### 一条命令自动运行
+
+推荐先用下面这条命令复现 1 分钟左右的多段正负角度测试：
+
+```bash
+cd /home/lavine/project/FALCON/sim2real
+
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+DURATION_SEC=70 \
+ELASTIC_LENGTH=-0.05 \
+VALVE_ANGLE_TARGETS_DEG=20,-60,35,-45,55,-30,40,-50 \
+VALVE_ANGLE_SPEED_DEG=8 \
+VALVE_ANGLE_HOLD_SEC=1.5 \
+VALVE_ANGLE_CONTROL_MODE=closed_loop \
+LOG_FILE=/tmp/falcon_valve_angle_tracking_closed_loop_1min.csv \
+MARKER_FILE=/tmp/falcon_valve_angle_tracking_closed_loop_1min_markers.json \
+SIM_STATUS_FILE=/tmp/falcon_valve_angle_tracking_closed_loop_1min_status.json \
+SIM_CONTROL_FILE=/tmp/falcon_valve_angle_tracking_closed_loop_1min_control.json \
+./launch_valve_angle_tracking_7dof_with_hand_auto.sh
+```
+
+自动脚本做的事情：
+
+1. 启动带手阀门 MuJoCo 场景。
+2. 设置弹力绳初始长度 `ELASTIC_LENGTH`。
+3. 启动 policy 并自动进入 policy 控制。
+4. policy 启动后延迟关闭弹力绳。
+5. 进入靠近、闭手、软连接、角度闭环转动流程。
+6. 写出 CSV、marker、status 和 control 文件。
+
+按 `Ctrl+C` 退出时，auto 脚本会同时清理 MuJoCo 和 policy 后台进程。
+
+默认输出：
+
+- `/tmp/falcon_valve_angle_tracking_metrics.csv`
+- `/tmp/falcon_valve_angle_tracking_markers.json`
+- `/tmp/falcon_valve_angle_tracking_status.json`
+- `/tmp/falcon_valve_angle_tracking_control.json`
+
+如果按上面复现命令运行，输出会改成：
+
+- `/tmp/falcon_valve_angle_tracking_closed_loop_1min.csv`
+- `/tmp/falcon_valve_angle_tracking_closed_loop_1min_markers.json`
+- `/tmp/falcon_valve_angle_tracking_closed_loop_1min_status.json`
+- `/tmp/falcon_valve_angle_tracking_closed_loop_1min_control.json`
+
+### 分开启动 sim 和 policy
+
+如果需要手动观察或调试，可以分两个终端运行。
+
+终端 1：
+
+```bash
+cd /home/lavine/project/FALCON/sim2real
+
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+ELASTIC_LENGTH=-0.05 \
+./launch_valve_angle_tracking_7dof_with_hand_sim.sh
+```
+
+终端 2：
+
+```bash
+cd /home/lavine/project/FALCON/sim2real
+
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+AUTO_START_POLICY=1 \
+DURATION_SEC=70 \
+VALVE_ANGLE_TARGETS_DEG=20,-60,35,-45,55,-30,40,-50 \
+VALVE_ANGLE_SPEED_DEG=8 \
+VALVE_ANGLE_CONTROL_MODE=closed_loop \
+./launch_valve_angle_tracking_7dof_with_hand_policy.sh
+```
+
+### 常用参数
+
+运行流程参数：
+
+- `DURATION_SEC`：policy 总运行时长。多段角度目标建议留足时间，否则最后一段可能被截断。
+- `ELASTIC_LENGTH`：初始弹力绳长度。当前稳定值是 `-0.05`。
+- `ELASTIC_RELEASE_DELAY_AFTER_POLICY_START_SEC`：policy 启动后多久松绳，默认 1 秒。
+- `TRACKING_START_DELAY_SEC`：松绳后多久开始任务状态机，默认 2 秒。
+- `SIM_STARTUP_WAIT_SEC`：auto 脚本启动 sim 后等待多久再启动 policy。
+- `SEED`：随机角度目标采样种子。
+
+角度目标参数：
+
+- `VALVE_ANGLE_TARGETS_DEG`：显式角度序列，逗号分隔，例如 `20,-60,35`。设置它时不会随机采样。
+- `VALVE_ANGLE_RANDOM_COUNT`：未设置显式目标时，随机目标段数。
+- `VALVE_ANGLE_MIN_ABS_DEG` / `VALVE_ANGLE_MAX_ABS_DEG`：随机目标的绝对角度范围。
+- `VALVE_ANGLE_SPEED_DEG`：参考角速度，单位 deg/s。
+- `VALVE_ANGLE_HOLD_SEC`：每段到达目标后的保持时间。
+
+角度闭环参数：
+
+- `VALVE_ANGLE_CONTROL_MODE`：`closed_loop` 或 `timed`。`closed_loop` 会用阀门实际角度反馈修正命令；`timed` 是原来的时间开环圆弧。
+- `VALVE_ANGLE_FEEDBACK_GAIN`：角度误差反馈增益，默认 `0.8`。增大后追赶更积极，但可能增加末端摆动。
+- `VALVE_ANGLE_COMMAND_LEAD_DEG`：闭环命令相对参考角允许提前的最大角度，默认 `20 deg`。
+- `VALVE_ANGLE_COMMAND_SPEED_DEG`：闭环命令角本身的最大变化速度，默认 `18 deg/s`。
+- `VALVE_ANGLE_EXTRA_SETTLE_SEC`：闭环模式下每段额外允许的收敛时间，默认 `2 s`。
+- `VALVE_ANGLE_TOLERANCE_DEG`：判断角度接近目标的阈值，默认 `2 deg`。
+
+阀门和连接参数：
+
+- `VALVE_ATTACHMENT_MODE`：`connect` 或 `none`。角度跟踪 baseline 默认使用 `connect`。
+- `VALVE_JOINT_DAMPING`：阀门 hinge damping。
+- `VALVE_JOINT_FRICTIONLOSS`：阀门 hinge frictionloss。
+
+IK 和上肢执行参数：
+
+- `TRACKING_IK_SPEED_FACTOR`
+- `TRACKING_IK_TRANS_WEIGHT`
+- `TRACKING_IK_REG_WEIGHT`
+- `TRACKING_IK_SMOOTH_WEIGHT`
+- `TRACKING_IK_FILTER_WEIGHTS`
+- `TRACKING_UPPER_TAU_FF_SCALE`
+- `TRACKING_UPPER_TAU_FF_CLIP`
+- `TRACKING_WRIST_KP_SCALE`
+- `TRACKING_WRIST_KD_SCALE`
+
+这些参数沿用末端跟踪优化流程。一般先不要同时大幅改多个参数，建议一次只改角度闭环或阀门动力学中的一类。
+
+### 角度跟踪结果分析
+
+分析 CSV 并生成报告和曲线：
+
+```bash
+cd /home/lavine/project/FALCON
+
+/home/lavine/miniconda3/envs/fcreal/bin/python \
+  sim2real/tools/analyze_valve_angle_tracking_metrics.py \
+  /tmp/falcon_valve_angle_tracking_closed_loop_1min.csv \
+  --report sim2real/eval_outputs/valve_angle_tracking_closed_loop_1min_report.md \
+  --plot sim2real/eval_outputs/valve_angle_tracking_closed_loop_1min_plot.png
+```
+
+CSV 关键字段：
+
+- `segment_target_delta_deg`：本段目标转角。
+- `desired_delta_deg`：参考轨迹角度。
+- `command_delta_deg`：闭环后实际发送给末端圆弧目标的命令角。
+- `actual_delta_deg`：阀门实际转角。
+- `angle_error_deg`：参考角和实际角的误差。
+- `final_angle_error_deg`：本段最终目标角和实际角的误差。
+- `ee_error_m`：右掌心代理点到当前末端目标点的距离。
+- `connect_stretch_m`：软连接两端的距离，可理解为软连接被拉开的程度。
+
+### 组会图表和视频素材
+
+新增脚本 `sim2real/tools/make_valve_group_meeting_assets.py` 可以从角度跟踪 CSV 生成组会用材料，包括方法示意图、总览图、MP4、GIF 和中文汇报文档。
+
+```bash
+cd /home/lavine/project/FALCON
+
+MPLCONFIGDIR=/tmp/matplotlib \
+/home/lavine/miniconda3/envs/fcreal/bin/python \
+  sim2real/tools/make_valve_group_meeting_assets.py \
+  --csv /tmp/falcon_valve_angle_tracking_closed_loop_1min.csv \
+  --output_dir sim2real/eval_outputs/group_meeting_valve_closed_loop \
+  --gif_frames 80
+```
+
+输出目录：
+
+- `sim2real/eval_outputs/group_meeting_valve_closed_loop/group_meeting_valve_closed_loop_report.md`
+- `sim2real/eval_outputs/group_meeting_valve_closed_loop/valve_closed_loop_method.png`
+- `sim2real/eval_outputs/group_meeting_valve_closed_loop/valve_closed_loop_summary.png`
+- `sim2real/eval_outputs/group_meeting_valve_closed_loop/valve_closed_loop_tracking_animation.mp4`
+- `sim2real/eval_outputs/group_meeting_valve_closed_loop/valve_closed_loop_tracking_animation.gif`
+
+当前本地没有飞书连接器或飞书 token，不能直接上传飞书。可以把上面这些文件手动上传到飞书文档；如果之后配置了飞书开放平台 token 或 webhook，再改成自动发布。
+
+## 带手阀门真实接触抓握 baseline
+
+这个测试用于验证右手三指夹爪能否在不使用 `connect/weld` 的情况下，通过真实接触夹住阀门轮盘。它使用新的整体加粗阀门场景：
+
+- `humanoidverse/data/robots/g1/valve_thick_body_include.xml`
+- `humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_grasp_contact.xml`
+
+新版阀门保留原来的轮盘、辐条、中心 hub 和 hinge 拓扑，不再添加局部抓取件。轮圈半径增大到 `0.16 m`，轮圈管径增大到约 `48 mm`，辐条和 hub 也同步加粗，目的是先验证“手指真实接触能不能夹住一个合理粗细的阀门轮盘”，而不是被过细轮圈卡住。
+
+policy 入口 `loco_manip_valve_grasp_contact_7dof_with_hand.py` 是独立状态机，不复用旧版 valve demo / valve task 的转动逻辑。
+
+推荐自动运行：
+
+```bash
+cd /home/lavine/project/FALCON/sim2real
+
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+DURATION_SEC=35 \
+ELASTIC_LENGTH=-0.05 \
+LOG_FILE=/tmp/falcon_valve_grasp_contact_metrics.csv \
+MARKER_FILE=/tmp/falcon_valve_grasp_contact_markers.json \
+SIM_STATUS_FILE=/tmp/falcon_valve_grasp_contact_status.json \
+SIM_CONTROL_FILE=/tmp/falcon_valve_grasp_contact_control.json \
+./launch_valve_grasp_contact_7dof_with_hand_auto.sh
+```
+
+这个脚本会启动 MuJoCo、自动启动 policy、松开弹力绳，然后执行：
+
+1. 移动到预抓取点。
+2. 启用右手姿态约束，让手的前向轴对准阀门轴，手内 y 轴对准阀门半径方向。
+3. 接近加粗轮圈上的抓取点。
+4. 关闭右手。
+5. 保持抓握并记录真实接触。
+
+MuJoCo 可视化：
+
+- 默认使用 `ee_marker_visual_mode: grasp_minimal`，只显示绿色目标点、红色当前末端点、黄色抓握工作点和状态文字。
+- 如需检查几何定义，可在 `g1_29dof_with_hand_valve_grasp_contact_overlay.yaml` 中临时改成 `ee_marker_visual_mode: grasp_debug`，此时会额外显示阀门中心线、抓握坐标轴和虚拟指尖目标。
+- 默认相机也写在同一个 overlay 的 `viewer_camera` 下；如果打开窗口后视角仍不顺手，优先微调 `lookat`、`distance`、`azimuth`、`elevation`。
+
+CSV 关键字段：
+
+- `contact_count`：右手手指和阀门轮盘之间的接触点数量。
+- `contact_normal_force`：这些接触点的法向力总和。
+- `grasp_success`：是否满足 `contact_count >= valve_grasp_success_min_contacts` 且 `contact_normal_force >= valve_grasp_success_min_force_n`。
+- `grasp_error_m`：右手代理点到阀门抓取 site 的距离。
+- `attach_enabled`：应为 `0`，表示没有使用 equality 连接。
+
+常用参数：
+
+- `HAND_KP` / `HAND_KD`：手指开合 PD 增益。
+- `VALVE_PREGRASP_OFFSET_M`：预抓取点沿阀门轴线外移距离。
+- `VALVE_PREGRASP_ERROR_M`：预抓取阶段的误差阈值。
+- `VALVE_PREGRASP_MAX_S`：预抓取最多等待时间；若末端存在稳定误差，会自动进入接近阶段。
+- `VALVE_GRASP_ERROR_M`：进入闭手阶段的距离阈值。
+- `VALVE_CLOSE_WAIT_S`：闭手后等待接触建立的时间。
+- `VALVE_HOLD_S`：抓住后保持观察的时间。
+- `VALVE_GRASP_SUCCESS_MIN_CONTACTS`：判断抓握成功所需最少接触点。
+- `VALVE_GRASP_SUCCESS_MIN_FORCE_N`：判断抓握成功所需最小接触法向力。
+- `VALVE_GRASP_TARGET_BIAS_BASE_M`：抓取目标点在 base 坐标系下的微调量，格式如 `0.0,0.0,0.01`。
+- `VALVE_GRASP_POINT_OFFSET_EE_M`：闭手后轮圈中心相对 `R_ee` 的期望位置，格式如 `-0.03,0.06,0.0`。默认值来自当前三指手闭合几何的粗略标定。
+
+当前抓握 baseline 默认冻结第一次读到的轮盘抓取点，不跟随阀门被轻微碰撞后的被动转动。这是为了先验证“接近同一个物理抓取点并闭手”的能力，后续进入主动转动阶段再切回阀门角度闭环。
+
+如果这个 baseline 能稳定产生真实接触，下一步再在同一场景里加入小角度真实接触转动，不再依赖 `connect`。
+
 旧版 `README_valve_demo.md` 中提到过 `launch_valve_demo_auto_v2.sh`，但当前仓库没有保留这个脚本。后续如果要恢复阀门自动化，建议参考现有 `launch_ee_tracking_*_auto.sh` 的结构重新写一份，不要直接依赖旧文档中的脚本名。
+
+## 带手阀门接触转动 baseline
+
+这个测试在真实接触抓握 baseline 上加入小角度阀门转动，不使用永久 `weld`。当前默认策略是：先要求掌心/手指和阀门形成真实接触，再启用柔顺 `connect` 作为“抓住后的传力近似”；到目标角附近进入 `turn_hold` 后释放 `connect`，并开启有限力矩角度制动，避免 MuJoCo 中阀门靠残余速度继续过冲。
+
+这不是为了在 MuJoCo 里完美复现真实摩擦抓握，而是为了验证后续实机需要的控制链路：接近预设抓点、闭合夹爪、沿阀门圆弧生成末端目标、用阀门角度反馈停止在目标附近。当前默认目标为 `10 deg`。
+
+推荐自动运行：
+
+```bash
+cd /home/lavine/project/FALCON
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh
+```
+
+默认输出：
+
+- CSV 日志：`artifacts/demo_logs/valve_contact_turning_YYYYMMDD_HHMMSS.csv`
+- MuJoCo marker：`/tmp/falcon_valve_contact_turning_markers_YYYYMMDD_HHMMSS.json`
+
+默认流程：
+
+1. 自动打开带手 G1 和加粗阀门场景。
+2. 自动启动 policy、释放弹力绳。
+3. 右手移动到预抓取点并接近轮圈抓点。
+4. 掌心/手指接触后缓慢闭合右手。
+5. 抓握拓扑、接触力、相对滑移和抓点误差满足阈值后，打开柔顺 `connect` 辅助传力。
+6. 进入转动前进行短暂预稳定，避免释放阀门角度锁时出现角速度跳变。
+7. 用阀门角度闭环修正末端圆弧命令，完成小角度转动。
+8. 到目标附近后释放 `connect`，并用有限力矩角度制动吸收残余角速度。
+
+当前默认参数位于：
+
+```text
+sim2real/config/g1/g1_29dof_with_hand_valve_contact_turning_overlay.yaml
+```
+
+常用参数：
+
+- `valve_turn_target_deg`：目标转角，当前默认 `10.0`。
+- `valve_turn_speed_deg`：参考角速度，当前默认 `1.5 deg/s`。这个速度比早期 `0.8 deg/s` 更快，目的是缩短持续接触时间，减少身体被阀门慢慢拉近。
+- `valve_turn_feedback_gain`：阀门角度闭环增益。
+- `valve_turn_command_lead_deg`：允许末端命令相对参考角提前的最大角度。
+- `valve_turn_command_speed_deg`：闭环命令角最大变化速度，当前默认 `5.0 deg/s`。
+- `valve_turn_radius_mode`：末端圆弧命令半径模式，当前默认 `target`，按阀门真实抓点半径生成圆弧。
+- `valve_turn_tolerance_deg`：实际角进入目标邻域的阈值，当前默认 `1.2 deg`。
+- `valve_turn_abort_min_base_to_valve_x_m`：base 到阀门过近时判失败，当前默认 `0.30 m`。
+- `valve_turn_abort_max_base_approach_m`：转动开始后 base 被拉近过多时判失败，当前默认 `0.12 m`。
+- `valve_turn_abort_max_base_yaw_drift_deg`：转动开始后 base yaw 漂移过大时判失败，当前默认 `20 deg`。
+- `valve_turn_contact_compensation_enabled`：是否启用小幅接触保持补偿，当前默认开启。
+- `valve_turn_finish_on_target_reached`：实际阀门角进入目标邻域后是否提前进入 hold，当前默认开启。
+- `valve_contact_assist_enabled`：真实接触后是否启用柔顺 `connect` 传力辅助，当前默认开启。
+- `valve_contact_assist_release_on_turn_hold`：进入目标保持阶段是否释放 `connect`，当前默认开启。
+- `valve_turn_hold_angle_brake_enabled`：进入目标保持阶段是否启用有限力矩角度制动，当前默认开启。该项是 MuJoCo demo 近似，实机部署时应由视觉/编码器角度反馈和末端停止保持逻辑替代。
+- `valve_turn_pre_settle_s`：进入转动前的短暂稳定时间。
+- `valve_joint_damping` / `valve_joint_frictionloss`：阀门 hinge 阻尼和静摩擦。
+- `hand_command_ramp_s`：右手闭合斜坡时间。
+- `hand_kp` / `hand_kd` / `right_hand_effort_limits`：手指开合 PD 和力矩限幅。
+- `hand_contact_hold_force_cap_n`：contact-hold 后的法向力上限。
+
+临时覆盖目标角的例子：
+
+```bash
+cd /home/lavine/project/FALCON
+VALVE_TURN_TARGET_DEG=20 \
+DURATION_SEC=55 \
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh
+```
+
+CSV 关键字段：
+
+- `turn_reference_delta_deg`：参考转角。
+- `turn_command_delta_deg`：闭环修正后的末端圆弧命令角。
+- `turn_actual_delta_deg`：阀门实际转角。
+- `turn_angle_error_deg`：目标或参考角与实际角的误差。
+- `turn_motion_radius_m`：本轮转动实际用于生成末端切向位移的运动半径。
+- `contact_topology`：`P/T/I/M` 分别表示掌心、拇指、食指、中指是否与阀门接触。
+- `contact_normal_force`：手-阀门接触法向力总和。
+- `relative_slip_m`：抓住后，抓点在阀门局部坐标系下的相对滑移。
+- `base_roll_deg` / `base_pitch_deg` / `base_yaw_deg`：机身姿态稳定性指标。
+- `base_to_valve_x` / `base_to_valve_y`：base 到阀门中心的相对站位，用于判断机器人是否被阀门拉近或拉偏。
+
+生成定量报告和图表：
+
+```bash
+cd /home/lavine/project/FALCON
+MPLCONFIGDIR=/tmp/matplotlib /home/lavine/miniconda3/envs/fcreal/bin/python \
+  sim2real/tools/analyze_valve_contact_turning_metrics.py \
+  artifacts/demo_logs/valve_contact_turning_YYYYMMDD_HHMMSS.csv \
+  --report artifacts/demo_logs/valve_contact_turning_report.md \
+  --plot artifacts/demo_logs/valve_contact_turning_report.png
+```
+
+当前已复现的结果：
+
+- `artifacts/demo_logs/valve_contact_turning_20260426_211334.csv`：目标 `5 deg`，最终 `4.23 deg`，最终误差 `0.77 deg`。
+- `artifacts/demo_logs/valve_contact_turning_20260426_211432.csv`：目标 `5 deg`，最终 `5.10 deg`，最终误差 `-0.10 deg`。
+- `artifacts/demo_logs/valve_contact_turning_20260426_234055.csv`：目标 `10 deg`，最终 `9.27 deg`，最终误差 `0.73 deg`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_073819.csv`：目标 `10 deg`，使用柔顺 `connect` + hold 阶段角度制动。`turn_hold` 末尾实际约 `12.83 deg`，后续 `done` 阶段收敛到约 `11.26 deg`，最终误差约 `-1.26 deg`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_080148.csv`：目标 `10 deg`，加入姿态/站位失败判据并把速度提高到 `1.5 deg/s`。`turn_hold` 末尾实际约 `9.74 deg`，整次运行末尾实际约 `10.20 deg`；转动/保持阶段 base 靠近约 `6.4 cm`，yaw 漂移约 `4.8 deg`，未触发稳定性失败判据。
+- 稳定性报告：`artifacts/demo_logs/valve_contact_turning_stability_guard_10deg_report.md`。
+- 稳定性图表：`artifacts/demo_logs/valve_contact_turning_stability_guard_10deg_report.png`。
+- 对比图：`artifacts/demo_logs/valve_contact_turning_contact_demo_summary_20260426_211334_211432.png`。
+- 10 度报告：`artifacts/demo_logs/valve_contact_turning_10deg_best_report.md`。
+- 10 度图表：`artifacts/demo_logs/valve_contact_turning_10deg_best_report.png`。
+- 阶段性报告：`docs/worklogs/valve_turning_contact_demo.md`。
+
+当前局限：
+
+- 当前可靠验证到 `10 deg` 小角度 baseline，还不能直接代表 30/45/60 度大角度转动。
+- 转动后半段接触力可能下降，接触拓扑会从 `PTIM` 退化为局部接触。
+- 当前已经把 base 过近、base yaw 大漂移和 base tilt 纳入失败判据；以后扩大目标角时，必须同时满足角度误差和稳定性指标。
+- 没有使用永久 `weld`，但当前默认启用了柔顺 `connect` 和 hold 阶段角度制动。它们是仿真 demo 的工程近似，不应表述为纯真实接触抓握。
+- 手指接触几何、摩擦和阀门物理参数仍经过 demo 调整，后续需要继续向真实硬件参数收敛。
+- 当前环境没有可直接调用的 `ffmpeg`，本轮没有自动生成视频；需要录视频时先用桌面录屏工具录 MuJoCo 窗口，保存到 `artifacts/demo_videos/`。
 
 ## sim2real 注意事项
 
@@ -412,7 +787,18 @@ ${PYTHON_BIN:-python} rl_policy/loco_manip/loco_manip_valve_turn.py \
 ## 相关文档
 
 - `WORKLOG_ee_tracking_with_hand.md`：本阶段末端跟踪和带手模型工作的中文记录。
-- `README_valve_demo.md`：阀门 demo 旧文档入口，当前已合并到本 README。
+- 旧版 `README_valve_demo.md` 已合并到本 README，仓库内不再单独维护。
+
+## 文档维护约定
+
+后续每新增一个可直接运行的 `.py` 实验脚本或 launch 脚本，都需要同步更新本 README，至少写清楚：
+
+- 脚本入口和推荐运行命令。
+- 必要输入文件、模型和配置 overlay。
+- 常用环境变量或命令行参数。
+- 默认输出文件位置。
+- 适用场景和不适用边界。
+- 如果有分析脚本，写清楚如何从 CSV 生成报告、图和视频。
 
 ## 致谢
 

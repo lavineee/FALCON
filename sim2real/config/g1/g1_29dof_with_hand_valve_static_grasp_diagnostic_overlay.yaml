@@ -1,0 +1,56 @@
+# 静态抓握诊断 overlay。
+# 用途：在阀门角度锁定、没有转动命令的条件下，单独验证右手是否能稳定包络预定抓点。
+# 这一步用于区分“抓握本身不稳”和“转动轨迹/角度闭环导致滑脱”。
+
+# 静态诊断使用带离散限位筋的圆形轮缘，不使用长方体抓握套或 weld。
+# 这样验证“真实圆柱接触面 + 槽位限位 + 三指夹爪”能否稳定包络。
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact.xml"
+
+valve_enable_turn: false
+valve_turn_target_deg: 0.0
+valve_turn_start_on_hold_entry: false
+
+# 抓住后保持更久，观察接触拓扑、相对滑移和接触力是否随时间退化。
+valve_hold_s: 10.0
+# 静态诊断完成后继续保持闭合，避免把主动松手误判成抓握滑脱。
+valve_release_on_done: false
+valve_stop_after_done_s: 2.0
+
+# 静态诊断阶段阀门必须保持不动；若仍出现角度跳变，说明接触/锁定或模型参数存在问题。
+valve_angle_lock_enabled: true
+valve_angle_hold_enabled: false
+valve_pre_turn_angle_lock_enabled: true
+# 静态抓住后应验证“手和阀门局部相对关系不再滑动”。
+# 进入 hold 时锁定真实接触建立的局部点，避免控制器继续把手拖回预设 site 造成表面滑移。
+valve_hold_latch_mode: "actual"
+# 静态抓握阶段优先保持真实接触建立时的局部位姿；回拉太多会把 PTIM 包络破坏成 PT--。
+valve_hold_actual_to_desired_blend: 0.50
+# clean thick valve scene 的阀门坐标相对 debug grasp-sleeve scene 翻转，
+# 同一类有效站姿在日志中表现为正 yaw。
+valve_task_pose_gate_yaw_range_deg: [17.0, 30.0]
+
+# 静态诊断沿用抓握 baseline 的柔和手控参数，避免被转动 overlay 的保守手控覆盖。
+hand_kp: 5.0
+hand_kd: 0.22
+hand_command_ramp_s: 1.5
+
+# 静态抓握应尽量满足掌心+拇指+食指+中指的完整包络，再锁定手指保持角。
+hand_contact_hold_require_palm: true
+hand_contact_hold_require_thumb: true
+hand_contact_hold_require_index: true
+hand_contact_hold_require_middle: true
+hand_contact_hold_min_contacts: 4
+hand_contact_hold_min_force_n: 10.0
+# 041700 表明单纯加大闭合余量不能保持掌心，先回到温和闭合。
+hand_contact_hold_sustain_s: 0.04
+hand_contact_hold_extra_close_fraction: 0.04
+# contact-turning overlay 会降低手指力矩；静态抓握诊断需要覆盖回抓握 baseline 的力矩。
+right_hand_effort_limits: [2.2, 1.30, 1.30, 1.05, 1.05, 1.05, 1.05]
+hand_contact_hold_force_cap_n: 75.0
+hand_contact_hold_force_target_n: 0.0
+hand_contact_prehold_force_cap_n: 0.0
+hand_contact_hold_min_thumb_close_fraction: 0.55
+hand_contact_hold_min_finger_close_fraction: 0.45
+
+# 静态诊断只保留关键点和状态文字，避免干扰观察真实接触。
+ee_marker_visual_mode: "grasp_minimal"

@@ -1,0 +1,51 @@
+# Overlay for random valve-angle tracking with the with-hand model.
+# This is a baseline for "can the policy drive a soft-constrained palm point
+# along the valve circle", not a full realistic grasp/contact validation.
+
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_task.xml"
+
+valve_center_site_name: "valve_center_site"
+valve_grasp_site_name: "right_hand_valve_site"
+valve_wheel_body_name: "valve_wheel"
+valve_attach_equality_name: "right_hand_valve_connect"
+
+# Use the softened point connect in the XML. It does not constrain palm
+# orientation and should be treated as a baseline contact surrogate only.
+valve_attachment_mode: "connect"
+disable_hand_finger_collision_for_tracking: true
+
+valve_pregrasp_offset_m: 0.12
+valve_pregrasp_error_m: 0.05
+valve_grasp_error_m: 0.025
+valve_grasp_target_bias_base_m: [0.007, -0.006, 0.028]
+valve_close_wait_s: 0.8
+valve_weld_settle_s: 1.0
+valve_task_start_delay_s: 0.5
+valve_hold_s: 1.5
+valve_release_on_done: true
+valve_stop_after_done_s: 1.0
+
+# Keep the default valve dynamics close to valve_body_include.xml.
+valve_joint_damping: 0.15
+valve_joint_frictionloss: 0.25
+
+# If valve_angle_tracking_targets_deg is empty/null, targets are sampled from
+# the random range below with random signs. Positive/negative signs follow the
+# MuJoCo hinge convention; visual clockwise/counterclockwise can be labeled
+# after one calibration run.
+valve_angle_tracking_targets_deg:
+valve_angle_tracking_random_count: 4
+valve_angle_tracking_min_abs_deg: 20.0
+valve_angle_tracking_max_abs_deg: 60.0
+valve_angle_tracking_speed_deg: 10.0
+valve_angle_tracking_hold_s: 1.5
+valve_angle_tracking_min_segment_s: 1.0
+valve_angle_tracking_control_mode: "closed_loop"
+valve_angle_tracking_feedback_gain: 0.8
+valve_angle_tracking_command_lead_deg: 20.0
+valve_angle_tracking_command_speed_deg: 18.0
+valve_angle_tracking_extra_settle_s: 2.0
+valve_angle_tracking_tolerance_deg: 2.0
+
+sim_status_write_interval_s: 0.02
+foot_contact_force_threshold: 20.0

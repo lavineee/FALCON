@@ -1,0 +1,118 @@
+<!-- 真实接触转阀门 demo 用的可抓握阀门。
+     相比 valve_thick_body_include.xml，整体轮盘尺寸保持一致，只在预定抓点处增加
+     同色局部抓握套和限位边，给三指夹爪提供稳定的形闭合几何。 -->
+<body name="valve_stand" pos="0 0 0.00">
+
+    <geom name="valve_pipe"
+          type="cylinder"
+          size="0.06 0.5"
+          pos="0 0 0.5"
+          rgba="0.35 0.35 0.38 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <geom name="valve_block"
+          type="box"
+          size="0.10 0.10 0.08"
+          pos="0 0 1.00"
+          rgba="0.35 0.35 0.38 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <geom name="valve_stem"
+          type="cylinder"
+          size="0.022 0.065"
+          pos="0.06 0 1.00"
+          euler="0 1.57079632679 0"
+          rgba="0.25 0.25 0.28 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <body name="valve_wheel" pos="0.12 0 1.00">
+        <inertial pos="0 0 0"
+                  mass="2.4"
+                  diaginertia="0.030 0.030 0.030"/>
+
+        <joint name="valve_hinge"
+               type="hinge"
+               axis="1 0 0"
+               pos="0 0 0"
+               limited="false"
+               damping="1.00"
+               frictionloss="1.20"/>
+
+        <geom name="wheel_hub"
+              type="cylinder"
+              size="0.045 0.014"
+              pos="0 0 0"
+              euler="0 1.57079632679 0"
+              rgba="0.75 0.10 0.10 1"
+              contype="1"
+              conaffinity="1"
+              friction="1.8 0.02 0.002"/>
+
+        <geom name="rim_00" type="capsule" size="0.024" fromto="0 0.1600 0.0000 0 0.1478 0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_01" type="capsule" size="0.024" fromto="0 0.1478 0.0612 0 0.1131 0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_02" type="capsule" size="0.024" fromto="0 0.1131 0.1131 0 0.0612 0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_03" type="capsule" size="0.024" fromto="0 0.0612 0.1478 0 0.0000 0.1600" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_04" type="capsule" size="0.024" fromto="0 0.0000 0.1600 0 -0.0612 0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_05" type="capsule" size="0.024" fromto="0 -0.0612 0.1478 0 -0.1131 0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_06" type="capsule" size="0.024" fromto="0 -0.1131 0.1131 0 -0.1478 0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_07" type="capsule" size="0.024" fromto="0 -0.1478 0.0612 0 -0.1600 0.0000" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_08" type="capsule" size="0.024" fromto="0 -0.1600 0.0000 0 -0.1478 -0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_09" type="capsule" size="0.024" fromto="0 -0.1478 -0.0612 0 -0.1131 -0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_10" type="capsule" size="0.024" fromto="0 -0.1131 -0.1131 0 -0.0612 -0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_11" type="capsule" size="0.024" fromto="0 -0.0612 -0.1478 0 -0.0000 -0.1600" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_12" type="capsule" size="0.024" fromto="0 -0.0000 -0.1600 0 0.0612 -0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_13" type="capsule" size="0.024" fromto="0 0.0612 -0.1478 0 0.1131 -0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_14" type="capsule" size="0.024" fromto="0 0.1131 -0.1131 0 0.1478 -0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="rim_15" type="capsule" size="0.024" fromto="0 0.1478 -0.0612 0 0.1600 -0.0000" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+
+        <geom name="spoke_00" type="capsule" size="0.018" fromto="0 0 0 0 0.1440 0.0000" rgba="1 1 1 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="spoke_01" type="capsule" size="0.018" fromto="0 0 0 0 0.0445 0.1370" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="spoke_02" type="capsule" size="0.018" fromto="0 0 0 0 -0.1165 0.0846" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="spoke_03" type="capsule" size="0.018" fromto="0 0 0 0 -0.1165 -0.0846" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+        <geom name="spoke_04" type="capsule" size="0.018" fromto="0 0 0 0 0.0445 -0.1370" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="1.8 0.02 0.002"/>
+
+        <!-- 局部抓握套位于 spoke_00 和 spoke_04 之间，不放在辐条连接处。
+             quat 是绕阀门 x 轴旋转 -36 deg，使盒子的 y 轴沿半径、z 轴沿切向。 -->
+        <geom name="grasp_sleeve"
+              type="box"
+              pos="0 0.1294 -0.0941"
+              quat="0.951057 -0.309017 0 0"
+              size="0.034 0.040 0.060"
+              rgba="0.82 0.06 0.06 1"
+              contype="1"
+              conaffinity="1"
+              friction="4.0 0.15 0.02"/>
+        <geom name="grasp_sleeve_stop_plus"
+              type="box"
+              pos="0 0.1647 -0.0456"
+              quat="0.951057 -0.309017 0 0"
+              size="0.036 0.044 0.010"
+              rgba="0.82 0.06 0.06 1"
+              contype="1"
+              conaffinity="1"
+              friction="4.0 0.15 0.02"/>
+        <geom name="grasp_sleeve_stop_minus"
+              type="box"
+              pos="0 0.0941 -0.1426"
+              quat="0.951057 -0.309017 0 0"
+              size="0.036 0.044 0.010"
+              rgba="0.82 0.06 0.06 1"
+              contype="1"
+              conaffinity="1"
+              friction="4.0 0.15 0.02"/>
+
+        <!-- 抓取目标点放在抓握套中心；控制层仍可通过 radial_inset 取内侧接触点。 -->
+        <body name="right_hand_valve_anchor" pos="0 0.1294 -0.0941">
+            <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-8 1e-8 1e-8"/>
+            <site name="right_hand_valve_site" pos="0 0 0" size="0.014" rgba="0 1 0 1" type="sphere"/>
+        </body>
+
+        <site name="valve_center_site" pos="0 0 0" size="0.008" rgba="0 0 1 1" type="sphere"/>
+    </body>
+</body>

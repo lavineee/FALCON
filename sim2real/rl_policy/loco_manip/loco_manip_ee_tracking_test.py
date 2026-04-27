@@ -42,7 +42,11 @@ def apply_named_motor_gain_scales(config):
 
 
 class LocoManipEETrackingTestPolicy(LocoManipPolicy):
-    """Right-hand end-effector position tracking test in the robot base frame."""
+    """右手末端位置跟踪测试。
+
+    目标点、当前末端点和误差都定义在机器人 base 坐标系下，方便和后续
+    阀门轨迹任务共用同一套末端定义。
+    """
 
     def __init__(
         self,
@@ -111,6 +115,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         self._last_upper_body_qpos = None
         self._last_upper_body_tauff = None
 
+        # 4DoF 版本只取肩肘关节；7DoF 子类会覆盖为包含手腕的完整上肢链。
         self.arm_reduced_joint_indices = [0, 1, 2, 3, 7, 8, 9, 10]
         self.full_arm_joint_indices = [
             self.dof_names.index("left_shoulder_pitch_joint"),
@@ -188,6 +193,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         self.update_waypoints()
 
     def _summarize_window(self):
+        # 每个目标点保持一段时间后汇总一次，避免只看瞬时误差误判跟踪质量。
         if not self._window_errors:
             return
         errors = np.asarray(self._window_errors, dtype=float)
@@ -238,6 +244,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         )
 
     def _current_right_fake_ee_base(self, robot_state_data):
+        # 这里的 fake_ee 是 Pinocchio 中的 R_ee 代理点，不一定等同于真实手掌接触点。
         full_q = robot_state_data[0, 7 : 7 + self.num_dofs]
         reduced_q = full_q[self.full_arm_joint_indices]
         return self._right_ee_from_upper_q(reduced_q)
@@ -274,6 +281,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
         target = np.array([self.EE_right_x, self.EE_right_y, self.EE_right_z], dtype=float)
         current = self._current_right_fake_ee_base(robot_state_data)
         commanded = self._last_commanded_right_ee_base()
+        # error 是最终可见误差；ik_error 和 servo_error 分别用于区分 IK 解算误差和关节执行误差。
         error = float(np.linalg.norm(current - target))
         ik_error = float(np.linalg.norm(commanded - target)) if np.all(np.isfinite(commanded)) else np.nan
         servo_error = float(np.linalg.norm(current - commanded)) if np.all(np.isfinite(commanded)) else np.nan
@@ -308,6 +316,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
     def _start_policy_for_auto_workflow(self):
         if self._started_policy:
             return
+        # 自动流程等价于手动按下 ]：先让 policy 接管，再由 sim 端按控制文件延迟松绳。
         self._handle_start_policy()
         self._started_policy = True
         self._policy_start_wall_t = time.perf_counter()
@@ -345,6 +354,7 @@ class LocoManipEETrackingTestPolicy(LocoManipPolicy):
                 )
             return False
 
+        # 松绳后再开始采样目标，避免把吊绳释放瞬态算进末端跟踪误差。
         if self._tracking_enabled:
             return True
 

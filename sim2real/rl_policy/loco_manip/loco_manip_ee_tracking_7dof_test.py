@@ -21,7 +21,7 @@ from sim2real.utils.arm_ik.weighted_moving_filter import WeightedMovingFilter
 
 
 class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
-    """Right hand-pad position tracking test using all 7 right-arm DoFs."""
+    """使用右臂 7DoF 做末端位置跟踪测试。"""
 
     def _configure_tracking_ik(self):
         controller = self.upper_body_controller
@@ -30,6 +30,7 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
         smooth_weight = float(self.config.get("tracking_ik_smooth_weight", 0.1))
         include_rotation = bool(self.config.get("tracking_ik_include_rotation", False))
 
+        # 当前评测只关心末端位置误差；姿态项默认关闭，避免给手腕引入额外约束。
         objective = (
             translational_weight * controller.translational_cost
             + regularization_weight * controller.regularization_cost
@@ -108,6 +109,7 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # 7DoF 版本使用完整右臂链，包括手腕三个关节。
         self.full_upper_joint_indices = [
             self.dof_names.index(name) for name in self.config["dof_names_upper_body"]
         ]
@@ -141,6 +143,7 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
             self._last_upper_body_tauff = np.asarray(upper_body_tauff[: self.num_upper_dofs], dtype=float)
             self.ref_upper_dof_pos[0, :] = self._last_upper_body_qpos
 
+        # 下肢和躯干仍由原 policy 输出；上肢参考由 IK 写入 ref_upper_dof_pos。
         scaled_policy_action = self.rl_inference(robot_state_data)
         if self.get_ready_state:
             q_target = self.get_init_target(robot_state_data)
@@ -158,6 +161,7 @@ class LocoManipEETracking7DofTestPolicy(LocoManipEETrackingTestPolicy):
             )
 
         if self.upper_tau_ff_scale and self._last_upper_body_tauff is not None:
+            # 只给上肢叠加小比例 IK 前馈力矩，避免影响下肢平衡策略。
             tau_ff = self.upper_tau_ff_scale * self._last_upper_body_tauff
             if self.upper_tau_ff_clip is not None:
                 tau_ff = np.clip(tau_ff, -self.upper_tau_ff_clip, self.upper_tau_ff_clip)

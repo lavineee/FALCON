@@ -1,0 +1,160 @@
+# 真实接触转阀门实验 overlay。
+# 需要在 grasp_contact overlay 之后加载：先真实接触抓住轮圈，再关闭角度锁并执行小角度闭环转动。
+
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact.xml"
+right_contact_grasp_proxy_site_name: "right_contact_grasp_palm_inner_site"
+disable_hand_finger_collision_for_tracking: false
+
+valve_enable_turn: true
+valve_turn_target_deg: 10.0
+valve_turn_speed_deg: 1.5
+valve_turn_control_mode: "closed_loop"
+valve_turn_feedback_gain: 0.8
+valve_turn_command_lead_deg: 3.0
+valve_turn_command_speed_deg: 5.0
+valve_turn_extra_settle_s: 1.5
+valve_turn_tolerance_deg: 1.20
+valve_turn_finish_on_target_reached: true
+valve_turn_min_s: 1.0
+valve_turn_hold_s: 1.0
+valve_turn_hold_angle_brake_enabled: true
+valve_turn_abort_slip_m: 0.18
+valve_turn_abort_contact_force_n: 600.0
+valve_turn_abort_base_tilt_deg: 12.0
+valve_turn_abort_valve_vel_rad_s: 8.0
+# 姿态保持是转阀门 demo 的硬约束：角度到了但身体被阀门拉近/拉偏，也判失败。
+valve_turn_abort_min_base_to_valve_x_m: 0.30
+valve_turn_abort_max_base_approach_m: 0.12
+valve_turn_abort_max_base_yaw_drift_deg: 20.0
+valve_turn_abort_require_feet_contact_stable: false
+valve_turn_abort_min_total_foot_force_n: 0.0
+
+# 只有先形成较稳定的真实接触，才进入转动阶段。
+valve_turn_entry_min_hold_s: 0.25
+valve_turn_entry_max_slip_m: 0.035
+valve_turn_entry_require_success: true
+# 抓点代理和真实接触点存在固定偏置；接触力和滑移更可信，因此这里不过度卡死 attach-site 误差。
+valve_turn_entry_max_attach_site_error_m: 0.095
+# 真实接触拓扑会在 palm/thumb/finger 间轻微抖动；允许短时间“曾经完整抓住且当前接触力仍足够”的状态进入转动。
+valve_turn_entry_success_memory_s: 2.5
+valve_turn_entry_min_contact_count: 3
+valve_turn_entry_min_contact_force_n: 8.0
+valve_turn_entry_max_contact_force_n: 35.0
+valve_turn_start_on_hold_entry: true
+valve_turn_pre_settle_s: 0.6
+valve_turn_pre_settle_max_s: 1.2
+valve_turn_pre_settle_max_abs_valve_vel: 0.20
+# 转动阶段按阀门真实抓点半径生成圆弧，优先保证角度跟踪含义清楚。
+# 接触/软连接已建立后，允许目标回到预设抓点圆周，避免缩放半径导致转角驱动力不足。
+valve_turn_radius_mode: "target"
+valve_turn_displacement_radius_gain: 1.0
+valve_turn_rotate_grasp_orientation: true
+valve_turn_contact_compensation_enabled: true
+# 末端圆弧方向与 MuJoCo valve_hinge 的正角度定义保持一致。
+# 若后续更换阀门模型或实机角度定义相反，只需要改这一项。
+valve_turn_trajectory_sign: 1.0
+# 转动阶段必须围绕预设阀门抓点保持接触；不能把闭手瞬间的实际偏差锁成新目标。
+valve_hold_latch_mode: "desired"
+
+# 接近和闭手阶段先固定阀门角度；真实接触判据通过后启用柔顺 connect 抓握辅助，
+# 再切到有限力矩软保持短暂卸载，避免完全靠硬锁释放。
+valve_pre_turn_angle_lock_enabled: true
+valve_pre_turn_angle_hold_enabled: false
+valve_angle_lock_enabled: true
+valve_angle_hold_enabled: false
+valve_angle_hold_kp: 35.0
+valve_angle_hold_kd: 15.0
+valve_angle_hold_torque_limit: 35.0
+valve_contact_assist_enabled: true
+valve_contact_assist_release_on_done: true
+valve_contact_assist_release_on_turn_hold: true
+# connect 辅助打开后，先保持阀门硬锁一小段时间，让几何残差由手臂目标慢慢吸收。
+valve_contact_assist_lock_settle_s: 0.45
+# 如果真实 connect site 离阀门抓点还太远，直接打开 equality 会把阀门拉飞，先退回纯接触诊断。
+valve_contact_assist_max_site_error_m: 0.095
+
+# contact-debug 参数：先用更接近“有阻尼、有静摩擦”的实际阀门，抑制解锁瞬间的角速度跳变。
+# 如果这一组能稳定，再逐步降低阻尼/摩擦并增大目标角。
+valve_joint_damping: 5.3
+valve_joint_frictionloss: 1.3
+
+# 接近阶段末端有约数厘米的稳态欠跟踪；只在未接触时预推命令点，不改变真实抓点定义。
+valve_approach_tracking_compensation_gain: 1.0
+# 统一轮缘管半径为 26 mm，接近时需要把掌心代理点真正送到内侧接触面。
+valve_approach_tracking_compensation_max_m: 0.080
+valve_approach_proxy_compensation_gain: 0.9
+valve_approach_proxy_compensation_max_m: 0.050
+# 闭手后不能继续把 palm proxy 硬推到几何 site 上；真实接触已经形成时，
+# 只保留很小补偿，否则会沿阀门轴向过推并把已有接触挤丢。
+valve_contact_tracking_compensation_gain: 0.35
+valve_contact_tracking_compensation_max_m: 0.025
+# 限制阀门任务中的右手目标点变化速度，减小上肢快速伸出对站姿/yaw 的扰动。
+valve_target_rate_limit_mps: 0.18
+
+# 接触转动阶段速度更慢，保留较长抓握观察时间，避免还未接触稳定就强行转动。
+valve_hold_entry_min_success_s: 0.12
+valve_grasp_error_m: 0.030
+# 真实接触会把掌心代理点顶开，不能只靠 3 cm 几何误差触发闭手；
+# 先要求掌垫已经碰到统一轮缘，再进入闭合，避免空夹。
+valve_require_palm_contact_to_close: true
+valve_palm_close_min_force_n: 0.5
+valve_palm_close_max_error_m: 0.120
+valve_close_on_contact: true
+valve_contact_close_min_contacts: 1
+valve_contact_close_min_force_n: 0.5
+# 手部控制器闭合有 ramp；等待手指基本包络阀门后再允许转动，避免半闭合状态就切入圆弧。
+valve_close_wait_s: 2.20
+valve_close_max_s: 7.0
+valve_hold_s: 4.0
+valve_stop_after_done_s: 0.7
+# 真实接触 demo 的统一轮缘可能让食指/中指先接触；满足近距离双指接触时允许闭手，
+# 后续成功判据仍要求 PTIM 完整接触。
+# 转动 demo 先不允许食指/中指单独触发闭爪，避免掌心还没贴合就提前空夹。
+valve_allow_finger_contact_close: false
+valve_finger_close_min_contacts: 2
+valve_finger_close_min_force_n: 5.0
+valve_finger_close_max_error_m: 0.115
+valve_finger_close_max_attach_site_error_m: 0.105
+valve_finger_close_require_index_middle: true
+
+# 转动时必须维持拇指-掌心-双指的包络，力上限过低会让接触保持逻辑主动松爪。
+# 这里保留温和力控，避免直接回到抓握 baseline 的强闭合。
+hand_command_ramp_s: 2.5
+hand_contact_hold_require_palm: false
+hand_contact_hold_min_force_n: 8.0
+hand_contact_hold_extra_close_fraction: 0.04
+hand_contact_hold_force_cap_n: 45.0
+hand_kp: 3.0
+hand_kd: 0.25
+right_hand_effort_limits: [1.5, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85]
+hand_contact_solref: [0.010, 1.0]
+hand_contact_solimp: [0.84, 0.97, 0.006, 0.50, 2.0]
+valve_wheel_contact_solref: [0.010, 1.0]
+valve_wheel_contact_solimp: [0.84, 0.97, 0.006, 0.50, 2.0]
+
+# 观察角度闭环时显示圆弧、目标转角和当前转角。
+ee_marker_visual_mode: "valve_angle"
+
+# 自动测试前先检查悬吊初始姿态和机器人-阀门相对站位。
+# 这一步只过滤明显无效初始化，避免把歪斜站姿导致的失败误判成抓握/转动控制问题。
+valve_preflight_enabled: true
+valve_preflight_min_wait_s: 1.0
+valve_preflight_required_stable_s: 0.5
+valve_preflight_max_wait_s: 8.0
+valve_preflight_max_base_tilt_deg: 7.5
+valve_preflight_base_z_range_m: [0.68, 0.92]
+valve_preflight_center_dx_range_m: [0.28, 0.58]
+valve_preflight_center_abs_y_max_m: 0.14
+valve_preflight_min_total_foot_force_n: 30.0
+
+# policy 启动、松绳、下肢站稳后，再检查一次任务站位。
+# 之前的失败日志显示 base yaw/dx 在 tracking_start_delay 内仍会漂移；
+# 这个门控用于过滤“还没开始抓就已经站位不对”的无效样本。
+valve_task_pose_gate_enabled: true
+valve_task_pose_gate_required_stable_s: 0.35
+valve_task_pose_gate_max_wait_s: 4.0
+valve_task_pose_gate_max_base_tilt_deg: 8.0
+valve_task_pose_gate_base_z_range_m: [0.68, 0.92]
+valve_task_pose_gate_center_dx_range_m: [0.34, 0.52]
+valve_task_pose_gate_center_abs_y_max_m: 0.08
+valve_task_pose_gate_yaw_range_deg: [17.0, 30.0]

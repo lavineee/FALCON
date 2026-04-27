@@ -15,6 +15,9 @@ LOG_INTERVAL_SEC="${LOG_INTERVAL_SEC:-5.0}"
 DISABLE_ELASTIC_AFTER_SEC="${DISABLE_ELASTIC_AFTER_SEC:-}"
 
 export EXTRA_OVERLAY_CONFIG
+export VALVE_JOINT_DAMPING="${VALVE_JOINT_DAMPING:-}"
+export VALVE_JOINT_FRICTIONLOSS="${VALVE_JOINT_FRICTIONLOSS:-}"
+export VALVE_ANGLE_LOCK_ENABLED="${VALVE_ANGLE_LOCK_ENABLED:-}"
 
 "${PYTHON_BIN}" -u - <<PY
 import os
@@ -38,6 +41,18 @@ extra_overlay_configs = [
 for overlay_path in extra_overlay_configs:
     with open(overlay_path) as file:
         config.update(yaml.safe_load(file) or {})
+
+for config_key, env_key in (
+    ("valve_joint_damping", "VALVE_JOINT_DAMPING"),
+    ("valve_joint_frictionloss", "VALVE_JOINT_FRICTIONLOSS"),
+):
+    value = os.environ.get(env_key, "")
+    if value:
+        config[config_key] = float(value)
+
+value = os.environ.get("VALVE_ANGLE_LOCK_ENABLED", "")
+if value:
+    config["valve_angle_lock_enabled"] = value.lower() in ("1", "true", "yes", "on")
 
 config.update({
     "enable_live_plot": False,

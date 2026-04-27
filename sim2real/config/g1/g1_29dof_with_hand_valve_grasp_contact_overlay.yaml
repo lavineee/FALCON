@@ -1,0 +1,167 @@
+# 带手模型的真实接触抓握 baseline。
+# 这个配置不使用 connect/weld，而是依靠右手手指和圆形加粗阀门轮缘的 MuJoCo 接触。
+
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact.xml"
+
+valve_center_site_name: "valve_center_site"
+valve_grasp_site_name: "right_hand_valve_site"
+valve_wheel_body_name: "valve_wheel"
+valve_attach_equality_name: "right_hand_valve_connect"
+right_contact_grasp_proxy_site_name: "right_contact_grasp_palm_inner_site"
+
+valve_attachment_mode: "none"
+# 阀门真实抓握阶段必须让可见手掌/手指 mesh 参与碰撞。
+# proxy pad 仍保留用于稳定统计和接触保持，但不能替代真实手指碰撞。
+disable_hand_finger_collision_for_tracking: false
+right_hand_contact_body_prefixes: ["right_hand_"]
+right_hand_contact_body_names: ["right_rubber_hand"]
+# 腕关节碰到阀门只作为物理碰撞存在，不计入“掌心已经贴合”的抓握判据。
+right_hand_count_wrist_contact: false
+
+# 抓握时启用姿态约束：手的前向轴对准阀门轴，手内 y 轴对准阀门半径。
+tracking_ik_include_rotation: true
+valve_align_grasp_orientation: true
+valve_grasp_forward_axis_sign: -1.0
+valve_grasp_radial_axis: "y"
+valve_grasp_radial_axis_sign: -1.0
+# 闭手前跟随阀门 site，闭手后锁定手相对阀门轮盘的局部抓取点。
+valve_freeze_grasp_world_after_start: false
+# 掌心贴近并进入闭手阶段后，锁定当时的抓取点和抓取姿态，避免目标跟随 site 抖动。
+valve_latch_grasp_frame_on_close: true
+valve_hold_target_mode: "valve_local"
+valve_hold_latch_mode: "actual"
+
+valve_pregrasp_offset_m: 0.12
+# 真实抓握不能从阀门正前方把开放手指“插进去”；预接近点沿掌心法向退让，
+# 最终接近时让掌心内侧先贴住轮缘，再闭合手指包络。
+valve_pregrasp_axis: "palm_normal"
+valve_pregrasp_error_m: 0.09
+valve_pregrasp_max_s: 3.0
+valve_approach_max_s: 0.0
+valve_grasp_error_m: 0.035
+valve_grasp_target_bias_base_m: [0.0, 0.0, 0.0]
+# 统一轮缘管半径约 0.026 m；抓取工作点取内侧接触面附近，
+# 使掌心内壁先贴住轮缘，再允许手指闭合包络。
+valve_grasp_radial_inset_m: 0.026
+# 抓取工作点对齐掌心内壁，不再使用偏外的旧 proxy site。
+valve_grasp_point_offset_ee_m: [-0.015, 0.0126, 0.0]
+valve_close_wait_s: 1.6
+valve_close_max_s: 5.0
+valve_hold_entry_min_success_s: 0.12
+valve_hold_entry_max_abs_valve_vel: 0.8
+valve_enter_hold_on_close_timeout: false
+valve_weld_settle_s: 0.6
+valve_task_start_delay_s: 0.5
+valve_hold_s: 5.0
+valve_release_on_done: true
+valve_stop_after_done_s: 2.0
+
+# 接近阶段同时看 wrist/fake-EE 和真实掌心代理点误差。
+# 后者用于修正手模型几何偏置，避免明明腕部跟踪到位但掌心还没有碰到阀门。
+valve_approach_tracking_compensation_gain: 0.8
+valve_approach_tracking_compensation_max_m: 0.055
+valve_approach_proxy_compensation_gain: 0.9
+valve_approach_proxy_compensation_max_m: 0.050
+valve_target_rate_limit_mps: 0.18
+
+# 第一阶段只看能否稳定夹住，不主动转动。
+valve_enable_turn: false
+valve_turn_target_deg: 0.0
+valve_turn_speed_deg: 2.0
+
+valve_joint_damping: 12.00
+valve_joint_frictionloss: 20.00
+
+# 当前脚本只验证“抓住后能否稳定贴合”，不主动转动阀门。
+# 抓握诊断阶段直接锁住阀门角度；真正转动测试会关闭这个锁。
+valve_angle_lock_enabled: true
+valve_angle_hold_enabled: false
+valve_angle_hold_kp: 120.0
+valve_angle_hold_kd: 12.0
+valve_angle_hold_torque_limit: 60.0
+
+# 抓握 baseline 使用更接近橡胶手指-金属阀门的高摩擦 6D 接触。
+# 额外启用默认隐藏的掌垫/指腹接触代理，减少手部 mesh 接触点不稳定带来的滑移。
+enable_hand_grasp_proxy_geoms: true
+hand_contact_friction: [5.5, 0.18, 0.035]
+hand_contact_condim: 6
+hand_contact_solref: [0.006, 1.0]
+hand_contact_solimp: [0.90, 0.98, 0.003, 0.50, 2.0]
+valve_wheel_contact_friction: [5.5, 0.18, 0.035]
+valve_wheel_contact_condim: 6
+valve_wheel_contact_solref: [0.006, 1.0]
+valve_wheel_contact_solimp: [0.90, 0.98, 0.003, 0.50, 2.0]
+contact_debug_name_tokens: ["right_grasp_proxy", "right_hand_", "right_rubber_hand", "rim_", "anti_slip_rib_", "spoke_", "wheel_"]
+sim_status_debug_geom_names:
+  - "right_grasp_proxy_palm_pad"
+  - "right_grasp_proxy_thumb_pad"
+  - "right_grasp_proxy_index_pad"
+  - "right_grasp_proxy_middle_pad"
+  - "rim_12"
+  - "rim_13"
+  - "rim_14"
+  - "anti_slip_rib_02"
+  - "anti_slip_rib_03"
+  - "wheel_hub"
+  - "valve_bearing_housing"
+
+# 手掌开放接近，不做预弯折；掌心内侧贴住轮缘后，再让手指向内柔和闭合。
+# 预弯折会让指尖先碰阀门，反而更容易形成空夹或提前卡住。
+right_hand_open_q: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# 手指不硬顶最终闭合角：先柔和闭合，形成稳定接触后锁住当前夹持角附近。
+hand_kp: 5.0
+hand_kd: 0.22
+hand_command_ramp_s: 1.5
+hand_contact_hold_enabled: true
+hand_contact_hold_min_contacts: 4
+hand_contact_hold_min_force_n: 12.0
+# 只有形成掌心+三指的完整包络后才锁住闭合角，避免掌心/拇指接触过早触发。
+hand_contact_hold_require_palm: true
+hand_contact_hold_require_thumb: true
+hand_contact_hold_require_index: true
+hand_contact_hold_require_middle: true
+hand_contact_hold_sustain_s: 0.04
+hand_contact_hold_extra_close_fraction: 0.04
+# 防止刚出现瞬时 PTIM 接触时过早锁住手型；先让拇指/双指实际闭合到一定比例。
+hand_contact_hold_min_thumb_close_fraction: 0.55
+hand_contact_hold_min_finger_close_fraction: 0.45
+# 静态抓握先不追求固定法向力；过度补闭会把食指/中指从轮缘上挤掉。
+hand_contact_hold_force_target_n: 0.0
+hand_contact_hold_force_deadband_n: 8.0
+hand_contact_hold_force_close_alpha: 0.015
+hand_contact_hold_force_cap_n: 75.0
+hand_contact_hold_force_relax_alpha: 0.25
+hand_contact_prehold_force_cap_n: 0.0
+# 前三个量是拇指关节。thumb_2=-0.90 明显偏开，-1.50 又容易由拇指把双指挤掉；
+# 这里取中间闭合量，让拇指指腹和食指/中指深度更接近。
+right_hand_close_q: [0.00, -0.30, -1.30, 1.45, 1.45, 1.45, 1.45]
+right_hand_effort_limits: [2.2, 1.30, 1.30, 1.05, 1.05, 1.05, 1.05]
+
+valve_grasp_success_min_contacts: 4
+valve_grasp_success_min_force_n: 8.0
+valve_grasp_success_require_thumb: true
+valve_grasp_success_require_finger: true
+valve_grasp_success_require_index: true
+valve_grasp_success_require_middle: true
+# 抓握成功和闭手触发都必须来自真实手部碰撞体接触，不能只靠隐藏 proxy 判定。
+valve_grasp_success_require_real_hand_contact: true
+valve_close_require_real_hand_contact: true
+valve_require_palm_contact_to_close: true
+valve_palm_close_min_force_n: 0.5
+valve_palm_close_max_error_m: 0.10
+valve_close_on_contact: false
+valve_contact_close_min_contacts: 1
+valve_contact_close_min_force_n: 0.5
+
+sim_status_write_interval_s: 0.02
+foot_contact_force_threshold: 20.0
+
+# 抓握接触场景默认只保留：目标末端点、当前末端点、抓握工作点和状态文字。
+# 如需重新查看阀门中心线/虚拟指尖/抓握坐标轴，可临时改成 grasp_debug。
+ee_marker_visual_mode: "grasp_minimal"
+viewer_camera:
+  # 从机器人右后方略俯视，便于观察右手和阀门轮缘的接触。
+  lookat: [0.32, -0.08, 0.82]
+  distance: 1.85
+  azimuth: 45
+  elevation: -28

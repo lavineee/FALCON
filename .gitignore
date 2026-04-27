@@ -33,6 +33,8 @@ logs_eval
 runs
 outputs
 results/
+artifacts/
+sim2real/artifacts/
 hydra_logs/
 wandb/
 # other
@@ -55,6 +57,10 @@ AMASS/*
 
 *.sh
 !sim2real/launch_ee_tracking*.sh
+!sim2real/launch_valve_grasp_contact*.sh
+!sim2real/launch_valve_contact_turning*.sh
+!sim2real/launch_valve_task*.sh
+!sim2real/launch_valve_angle_tracking*.sh
 *.txt
 *.zip
 
@@ -63,6 +69,7 @@ AMASS/*
 
 .codex
 .codex/
+AGENTS.md
 sim2real/eval_outputs/
 
 test.py

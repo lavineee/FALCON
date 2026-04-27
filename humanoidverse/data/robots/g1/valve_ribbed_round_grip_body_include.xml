@@ -1,0 +1,116 @@
+<!-- 真实接触抓握/转阀门用的带限位防滑筋圆形阀门。
+     设计原则：
+     1. 保留现实阀门的轮圈、五辐条和中心 hub；
+     2. 整圈轮缘仍为统一圆管，不使用局部长方体抓握套；
+     3. 在圆管外圈均匀增加离散限位筋，让手抓在两个凸台之间形成形状约束；
+     4. hinge 带适中的阻尼、静摩擦和转动惯量，避免轻微接触就产生角度跳变。 -->
+<body name="valve_stand" pos="0 0 0.00">
+
+    <geom name="valve_pipe"
+          type="cylinder"
+          size="0.065 0.50"
+          pos="0 0 0.50"
+          rgba="0.32 0.32 0.34 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <geom name="valve_block"
+          type="box"
+          size="0.045 0.055 0.045"
+          pos="-0.015 0 1.00"
+          rgba="0.34 0.34 0.36 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <geom name="valve_stem"
+          type="cylinder"
+          size="0.026 0.036"
+          pos="0.042 0 1.00"
+          euler="0 1.57079632679 0"
+          rgba="0.22 0.22 0.24 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <geom name="valve_bearing_housing"
+          type="cylinder"
+          size="0.046 0.010"
+          pos="0.090 0 1.00"
+          euler="0 1.57079632679 0"
+          rgba="0.24 0.24 0.26 1"
+          contype="1"
+          conaffinity="1"
+          friction="1.2 0.01 0.001"/>
+
+    <body name="valve_wheel" pos="0.12 0 1.00">
+        <inertial pos="0 0 0"
+                  mass="3.0"
+                  diaginertia="0.050 0.050 0.050"/>
+
+        <joint name="valve_hinge"
+               type="hinge"
+               axis="1 0 0"
+               pos="0 0 0"
+               limited="true"
+               range="-3.1416 3.1416"
+               damping="4.0"
+               frictionloss="1.0"
+               armature="0.03"/>
+
+        <geom name="wheel_hub"
+              type="cylinder"
+              size="0.050 0.016"
+              pos="0 0 0"
+              euler="0 1.57079632679 0"
+              rgba="0.75 0.10 0.10 1"
+              contype="1"
+              conaffinity="1"
+              friction="2.0 0.03 0.003"/>
+
+        <!-- 主轮缘：连续 capsule 近似圆环。管半径 26 mm，兼顾可抓性和三指夹爪包络空间。 -->
+        <geom name="rim_00" type="capsule" size="0.026" fromto="0 0.1600 0.0000 0 0.1478 0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_01" type="capsule" size="0.026" fromto="0 0.1478 0.0612 0 0.1131 0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_02" type="capsule" size="0.026" fromto="0 0.1131 0.1131 0 0.0612 0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_03" type="capsule" size="0.026" fromto="0 0.0612 0.1478 0 0.0000 0.1600" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_04" type="capsule" size="0.026" fromto="0 0.0000 0.1600 0 -0.0612 0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_05" type="capsule" size="0.026" fromto="0 -0.0612 0.1478 0 -0.1131 0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_06" type="capsule" size="0.026" fromto="0 -0.1131 0.1131 0 -0.1478 0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_07" type="capsule" size="0.026" fromto="0 -0.1478 0.0612 0 -0.1600 0.0000" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_08" type="capsule" size="0.026" fromto="0 -0.1600 0.0000 0 -0.1478 -0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_09" type="capsule" size="0.026" fromto="0 -0.1478 -0.0612 0 -0.1131 -0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_10" type="capsule" size="0.026" fromto="0 -0.1131 -0.1131 0 -0.0612 -0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_11" type="capsule" size="0.026" fromto="0 -0.0612 -0.1478 0 -0.0000 -0.1600" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_12" type="capsule" size="0.026" fromto="0 -0.0000 -0.1600 0 0.0612 -0.1478" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_13" type="capsule" size="0.026" fromto="0 0.0612 -0.1478 0 0.1131 -0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_14" type="capsule" size="0.026" fromto="0 0.1131 -0.1131 0 0.1478 -0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+        <geom name="rim_15" type="capsule" size="0.026" fromto="0 0.1478 -0.0612 0 0.1600 -0.0000" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
+
+        <!-- 限位防滑筋：8 个低矮短圆柱环绕轮缘。
+             抓取点放在 anti_slip_rib_02 和 anti_slip_rib_03 之间的槽位，减少手指卡在凸台顶部的概率。 -->
+        <geom name="anti_slip_rib_00" type="cylinder" size="0.028" fromto="0 -0.1311 -0.0918 0 -0.1226 -0.1028" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_01" type="cylinder" size="0.028" fromto="0 -0.0278 -0.1576 0 -0.0139 -0.1594" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_02" type="cylinder" size="0.028" fromto="0 0.0918 -0.1311 0 0.1028 -0.1226" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_03" type="cylinder" size="0.028" fromto="0 0.1576 -0.0278 0 0.1594 -0.0139" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_04" type="cylinder" size="0.028" fromto="0 0.1311 0.0918 0 0.1226 0.1028" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_05" type="cylinder" size="0.028" fromto="0 0.0278 0.1576 0 0.0139 0.1594" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_06" type="cylinder" size="0.028" fromto="0 -0.0918 0.1311 0 -0.1028 0.1226" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+        <geom name="anti_slip_rib_07" type="cylinder" size="0.028" fromto="0 -0.1576 0.0278 0 -0.1594 0.0139" rgba="0.68 0.06 0.06 1" contype="1" conaffinity="1" friction="5.5 0.18 0.035"/>
+
+        <!-- 辐条从 hub 外缘开始，不穿过中心轴承区域。spoke_00 用亮黄色标出阀门 0 点，便于肉眼观察转角。 -->
+        <geom name="spoke_00" type="capsule" size="0.017" fromto="0 0.0580 0.0000 0 0.1320 0.0000" rgba="1.00 0.88 0.00 1" contype="1" conaffinity="1" friction="2.0 0.03 0.003"/>
+        <geom name="spoke_01" type="capsule" size="0.017" fromto="0 0.0179 0.0552 0 0.0408 0.1255" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="2.0 0.03 0.003"/>
+        <geom name="spoke_02" type="capsule" size="0.017" fromto="0 -0.0469 0.0341 0 -0.1068 0.0776" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="2.0 0.03 0.003"/>
+        <geom name="spoke_03" type="capsule" size="0.017" fromto="0 -0.0469 -0.0341 0 -0.1068 -0.0776" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="2.0 0.03 0.003"/>
+        <geom name="spoke_04" type="capsule" size="0.017" fromto="0 0.0179 -0.0552 0 0.0408 -0.1255" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="2.0 0.03 0.003"/>
+
+        <!-- 抓取目标点位于 -45deg 和 -15deg 两个限位筋中间，避开辐条和 hub。 -->
+        <body name="right_hand_valve_anchor" pos="0 0.1386 -0.0800">
+            <inertial pos="0 0 0" mass="0.0001" diaginertia="1e-8 1e-8 1e-8"/>
+            <site name="right_hand_valve_site" pos="0 0 0" size="0.014" rgba="0 1 0 1" type="sphere"/>
+        </body>
+
+        <site name="valve_center_site" pos="0 0 0" size="0.008" rgba="0 0 1 1" type="sphere"/>
+    </body>
+</body>
