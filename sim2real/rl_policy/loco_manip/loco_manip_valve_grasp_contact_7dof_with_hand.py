@@ -214,6 +214,26 @@ class VisionOverlayGraspGeometryProvider:
         override_control=False,
         override_angle=False,
         debug_file="/tmp/falcon_valve_vision_overlay_debug.json",
+        state_getter=None,
+        override_states=None,
+        use_quality_gate=True,
+        log_control_source=True,
+        min_center_points=200,
+        min_spoke_points=300,
+        min_grasp_points=50,
+        min_plane_aux_points=50,
+        max_plane_fit_error_m=0.006,
+        max_center_jump_m=0.03,
+        max_grasp_jump_m=0.04,
+        max_axis_jump_deg=5.0,
+        smoothing_enable=True,
+        smoothing_alpha=0.35,
+        latch_last_valid_approach_geom=True,
+        latched_geom_max_age_s=2.0,
+        use_latched_after_approach=False,
+        grasp_forward_axis_sign=-1.0,
+        grasp_radial_axis="y",
+        grasp_radial_axis_sign=-1.0,
     ):
         self.gt_provider = gt_provider
         self.vision_status_file = vision_status_file
@@ -223,41 +243,221 @@ class VisionOverlayGraspGeometryProvider:
         self.override_control = bool(override_control)
         self.override_angle = bool(override_angle)
         self.debug_file = debug_file
+        self.state_getter = state_getter
+        default_states = ("wait_task_pose", "move_pregrasp", "approach_grasp")
+        if override_states is None:
+            override_states = default_states
+        elif isinstance(override_states, str):
+            override_states = [
+                item.strip()
+                for item in override_states.replace(";", ",").split(",")
+                if item.strip()
+            ]
+        self.override_states = {
+            str(state).strip()
+            for state in override_states
+            if str(state).strip()
+        }
+        self.use_quality_gate = bool(use_quality_gate)
+        self.log_control_source = bool(log_control_source)
+        self.min_center_points = int(min_center_points)
+        self.min_spoke_points = int(min_spoke_points)
+        self.min_grasp_points = int(min_grasp_points)
+        self.min_plane_aux_points = int(min_plane_aux_points)
+        self.max_plane_fit_error_m = float(max_plane_fit_error_m)
+        self.max_center_jump_m = float(max_center_jump_m)
+        self.max_grasp_jump_m = float(max_grasp_jump_m)
+        self.max_axis_jump_deg = float(max_axis_jump_deg)
+        self.smoothing_enable = bool(smoothing_enable)
+        self.smoothing_alpha = float(np.clip(float(smoothing_alpha), 0.0, 1.0))
+        self.latch_last_valid_approach_geom = bool(latch_last_valid_approach_geom)
+        self.latched_geom_max_age_s = float(latched_geom_max_age_s)
+        self.use_latched_after_approach = bool(use_latched_after_approach)
+        self.grasp_forward_axis_sign = 1.0 if float(grasp_forward_axis_sign) >= 0.0 else -1.0
+        self.grasp_radial_axis = str(grasp_radial_axis).strip().lower()
+        self.grasp_radial_axis_sign = 1.0 if float(grasp_radial_axis_sign) >= 0.0 else -1.0
+        self._last_accepted_vision_geom = None
+        self._last_accepted_vision_timestamp = None
+        self._smoothed_vision_geom = None
+        self._last_smoothing_applied = False
+        self._last_valid_approach_geom = None
+        self._last_valid_approach_timestamp = None
+        self._last_valid_grasp_timestamp = None
 
     def read(self):
         gt_geom = self.gt_provider.read()
         if gt_geom is None:
             return None
 
+        state = self._current_state()
         vision, reason = self._read_vision_status()
-        use_control = False
-        overlay_geom = None
+        overlay_geom_for_debug = None
         if vision is not None:
             try:
-                overlay_geom = self._build_overlay_geom(gt_geom, vision)
-                use_control = self.mode == "vision_overlay" and self.override_control
-                debug = self._make_debug_payload(
-                    gt_geom,
-                    overlay_geom,
-                    vision,
-                    reason="ok",
-                    vision_valid=True,
-                    vision_used_for_control=use_control,
-                )
-                self._write_debug_payload(debug)
-                if use_control:
-                    return self._with_vision_metadata(overlay_geom, debug)
-                return self._with_vision_metadata(gt_geom, debug)
+                overlay_geom_for_debug = self._build_overlay_geom(gt_geom, vision)
             except Exception as exc:
                 reason = f"overlay_build_failed:{type(exc).__name__}:{exc}"
 
+        if vision is not None and overlay_geom_for_debug is None and str(reason).startswith("overlay_build_failed"):
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason=reason,
+                state=state,
+                control_block_reason="vision_invalid",
+                vision_valid=False,
+            )
+
+        if vision is None:
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason=reason,
+                state=state,
+                control_block_reason=self._control_block_reason(reason),
+                vision_valid=False,
+            )
+
+        if self.mode == "vision_overlay_debug":
+            debug = self._make_debug_payload(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason="ok",
+                vision_valid=True,
+                vision_used_for_control=False,
+                state=state,
+                geometry_source_used="gt",
+                control_block_reason="debug_mode",
+            )
+            self._write_debug_payload(debug)
+            return self._with_vision_metadata(gt_geom, debug)
+
+        if self.mode != "vision_overlay" or not self.override_control:
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason="override_disabled",
+                state=state,
+                control_block_reason="override_disabled",
+                vision_valid=True,
+            )
+
+        if state not in self.override_states:
+            latched_geom = self._latched_overlay_from_current_gt(gt_geom)
+            if latched_geom is not None:
+                debug = self._make_debug_payload(
+                    gt_geom,
+                    latched_geom,
+                    vision,
+                    reason="latched_after_approach",
+                    vision_valid=True,
+                    vision_used_for_control=True,
+                    state=state,
+                    geometry_source_used="vision_latched",
+                    control_block_reason="latched_after_approach",
+                    quality_pass=True,
+                    latched_geometry_source="vision_overlay",
+                )
+                self._write_debug_payload(debug)
+                return self._with_vision_metadata(latched_geom, debug)
+            quality_pass, _ = self._quality_gate(vision)
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason="not_allowed_state",
+                state=state,
+                control_block_reason="not_allowed_state",
+                vision_valid=True,
+                quality_pass=quality_pass,
+            )
+
+        quality_pass, quality_reason = self._quality_gate(vision)
+        if not quality_pass:
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason=quality_reason,
+                state=state,
+                control_block_reason=quality_reason,
+                vision_valid=True,
+                quality_pass=False,
+            )
+
+        candidate = self._copy_vision_geom(vision)
+        temporal_pass, temporal_reason = self._temporal_gate(candidate)
+        if not temporal_pass:
+            return self._fallback_result(
+                gt_geom,
+                overlay_geom_for_debug,
+                vision,
+                reason=temporal_reason,
+                state=state,
+                control_block_reason="temporal_outlier",
+                vision_valid=True,
+                quality_pass=True,
+                temporal_outlier=True,
+            )
+
+        accepted_vision = self._smooth_vision_geom(candidate)
+        overlay_geom = self._build_overlay_geom(gt_geom, accepted_vision)
+        now = time.time()
+        self._last_accepted_vision_geom = self._copy_vision_geom(accepted_vision)
+        self._last_accepted_vision_timestamp = now
+        if bool(accepted_vision.get("grasp_valid", False)):
+            self._last_valid_grasp_timestamp = now
+        if self.latch_last_valid_approach_geom and state in self.override_states:
+            self._last_valid_approach_geom = dict(overlay_geom)
+            self._last_valid_approach_timestamp = now
+
+        debug = self._make_debug_payload(
+            gt_geom,
+            overlay_geom,
+            accepted_vision,
+            reason="ok",
+            vision_valid=True,
+            vision_used_for_control=True,
+            state=state,
+            geometry_source_used="vision_overlay",
+            control_block_reason="ok",
+            quality_pass=True,
+            smoothing_applied=self._last_smoothing_applied,
+        )
+        self._write_debug_payload(debug)
+        return self._with_vision_metadata(overlay_geom, debug)
+
+    def read_gt(self):
+        return self.gt_provider.read()
+
+    def _fallback_result(
+        self,
+        gt_geom,
+        overlay_geom,
+        vision,
+        reason,
+        state,
+        control_block_reason,
+        vision_valid=False,
+        quality_pass=False,
+        temporal_outlier=False,
+    ):
         debug = self._make_debug_payload(
             gt_geom,
             overlay_geom,
             vision,
             reason=reason,
-            vision_valid=False,
+            vision_valid=vision_valid,
             vision_used_for_control=False,
+            state=state,
+            geometry_source_used="gt",
+            control_block_reason=control_block_reason,
+            quality_pass=quality_pass,
+            temporal_outlier=temporal_outlier,
         )
         self._write_debug_payload(debug)
 
@@ -266,6 +466,28 @@ class VisionOverlayGraspGeometryProvider:
         if self.fallback_to_gt:
             return self._with_vision_metadata(gt_geom, debug)
         return None
+
+    def _current_state(self):
+        if self.state_getter is None:
+            return None
+        try:
+            return self.state_getter()
+        except Exception:
+            return None
+
+    def _control_block_reason(self, read_reason):
+        text = str(read_reason or "")
+        if "missing" in text or "file_missing" in text:
+            return "vision_missing"
+        if text.startswith("vision_stale"):
+            return "vision_stale"
+        if text.startswith("vision_valid_false"):
+            return "vision_invalid"
+        if text.startswith("vision_json_parse_failed") or text.startswith("vision_validation_failed"):
+            return "vision_invalid"
+        if text.startswith("unsupported_vision_frame") or text.startswith("overlay_build_failed"):
+            return "vision_invalid"
+        return "vision_invalid"
 
     def _read_vision_status(self):
         if not self.vision_status_file:
@@ -297,6 +519,11 @@ class VisionOverlayGraspGeometryProvider:
             parsed = {
                 "timestamp": timestamp,
                 "frame": frame,
+                "valid": bool(vision.get("valid", False)),
+                "pose_valid": bool(vision.get("pose_valid", vision.get("valid", False))),
+                "grasp_valid": bool(vision.get("grasp_valid", vision.get("valid", False))),
+                "grasp_latched": bool(vision.get("grasp_latched", False)),
+                "plane_aux_valid": bool(vision.get("plane_aux_valid", False)),
                 "center_base": _array3_or_raise(vision.get("center_base"), "center_base"),
                 "grasp_base": _array3_or_raise(vision.get("grasp_base"), "grasp_base"),
                 "axis_base": _array3_or_raise(vision.get("axis_base"), "axis_base"),
@@ -308,6 +535,12 @@ class VisionOverlayGraspGeometryProvider:
             parsed["axis_base"] = parsed["axis_base"] / axis_norm
             if "wheel_pos_base" in vision:
                 parsed["wheel_pos_base"] = _array3_or_raise(vision["wheel_pos_base"], "wheel_pos_base")
+            if "spoke_dir_base" in vision and vision["spoke_dir_base"] is not None:
+                spoke_dir = _array3_or_raise(vision["spoke_dir_base"], "spoke_dir_base")
+                spoke_dir = spoke_dir - np.dot(spoke_dir, parsed["axis_base"]) * parsed["axis_base"]
+                parsed["spoke_dir_base"] = _normalize_or_none(spoke_dir)
+            if "plane_aux_base" in vision and vision["plane_aux_base"] is not None:
+                parsed["plane_aux_base"] = _array3_or_raise(vision["plane_aux_base"], "plane_aux_base")
             if "wheel_R_base" in vision and vision["wheel_R_base"] is not None:
                 parsed["wheel_R_base"] = _rot3_or_raise(vision["wheel_R_base"], "wheel_R_base")
             if "grasp_R_base" in vision and vision["grasp_R_base"] is not None:
@@ -324,6 +557,232 @@ class VisionOverlayGraspGeometryProvider:
             return None, f"vision_validation_failed:{type(exc).__name__}:{exc}"
 
         return parsed, "ok"
+
+    def _copy_vision_geom(self, vision):
+        copied = dict(vision)
+        for key in (
+            "center_base",
+            "grasp_base",
+            "axis_base",
+            "wheel_pos_base",
+            "spoke_dir_base",
+            "plane_aux_base",
+        ):
+            if key in copied and copied[key] is not None:
+                copied[key] = np.asarray(copied[key], dtype=float).reshape(3).copy()
+        for key in ("wheel_R_base", "grasp_R_base"):
+            if key in copied and copied[key] is not None:
+                copied[key] = np.asarray(copied[key], dtype=float).reshape(3, 3).copy()
+        return copied
+
+    def _quality_number(self, vision, key):
+        try:
+            return float(vision.get("quality", {}).get(key, np.nan))
+        except Exception:
+            return np.nan
+
+    def _quality_gate(self, vision):
+        if not bool(vision.get("pose_valid", False)):
+            return False, "pose_invalid"
+
+        grasp_valid = bool(vision.get("grasp_valid", False))
+        grasp_latched = bool(vision.get("grasp_latched", False))
+        if not grasp_valid and not grasp_latched:
+            return False, "grasp_invalid"
+        if grasp_latched:
+            if self._last_valid_grasp_timestamp is None:
+                return False, "grasp_invalid:latch_without_provider_history"
+            latch_age = time.time() - self._last_valid_grasp_timestamp
+            if self.latched_geom_max_age_s >= 0.0 and latch_age > self.latched_geom_max_age_s:
+                return False, f"grasp_invalid:latch_stale:{latch_age:.3f}s"
+
+        if not self.use_quality_gate:
+            return True, "ok"
+
+        checks = [
+            (
+                self._quality_number(vision, "center_num_points") >= self.min_center_points,
+                "bad_quality:center_num_points",
+            ),
+            (
+                self._quality_number(vision, "spoke_num_points") >= self.min_spoke_points,
+                "bad_quality:spoke_num_points",
+            ),
+            (
+                self._quality_number(vision, "plane_aux_num_points") >= self.min_plane_aux_points,
+                "bad_quality:plane_aux_num_points",
+            ),
+            (
+                self._quality_number(vision, "plane_fit_error_m") <= self.max_plane_fit_error_m,
+                "bad_quality:plane_fit_error_m",
+            ),
+        ]
+        if grasp_valid:
+            checks.append(
+                (
+                    self._quality_number(vision, "grasp_num_points") >= self.min_grasp_points,
+                    "bad_quality:grasp_num_points",
+                )
+            )
+
+        for ok, reason in checks:
+            if not ok:
+                return False, reason
+        return True, "ok"
+
+    def _temporal_gate(self, vision):
+        last = self._last_accepted_vision_geom
+        if last is None:
+            return True, "ok"
+
+        axis_now = _normalize_or_none(vision["axis_base"])
+        axis_last = _normalize_or_none(last["axis_base"])
+        if axis_now is None or axis_last is None:
+            return False, "temporal_outlier:axis_invalid"
+        if float(np.dot(axis_now, axis_last)) < 0.0:
+            axis_now = -axis_now
+            vision["axis_base"] = axis_now
+
+        center_jump = float(np.linalg.norm(vision["center_base"] - last["center_base"]))
+        if center_jump > self.max_center_jump_m:
+            return False, f"temporal_outlier:center_jump_m={center_jump:.4f}"
+        grasp_jump = float(np.linalg.norm(vision["grasp_base"] - last["grasp_base"]))
+        if grasp_jump > self.max_grasp_jump_m:
+            return False, f"temporal_outlier:grasp_jump_m={grasp_jump:.4f}"
+        cos_axis = np.clip(float(np.dot(axis_now, axis_last)), -1.0, 1.0)
+        axis_jump_deg = float(np.rad2deg(np.arccos(cos_axis)))
+        if axis_jump_deg > self.max_axis_jump_deg:
+            return False, f"temporal_outlier:axis_jump_deg={axis_jump_deg:.3f}"
+        return True, "ok"
+
+    def _smooth_vision_geom(self, vision):
+        smoothed = self._copy_vision_geom(vision)
+        self._last_smoothing_applied = bool(self.smoothing_enable and self._smoothed_vision_geom is not None)
+        if self._last_smoothing_applied:
+            alpha = self.smoothing_alpha
+            prev = self._smoothed_vision_geom
+            smoothed["center_base"] = alpha * vision["center_base"] + (1.0 - alpha) * prev["center_base"]
+            smoothed["grasp_base"] = alpha * vision["grasp_base"] + (1.0 - alpha) * prev["grasp_base"]
+            axis_now = _normalize_or_none(vision["axis_base"])
+            axis_prev = _normalize_or_none(prev["axis_base"])
+            if axis_now is not None and axis_prev is not None:
+                if float(np.dot(axis_now, axis_prev)) < 0.0:
+                    axis_now = -axis_now
+                axis = _normalize_or_none(alpha * axis_now + (1.0 - alpha) * axis_prev)
+                if axis is not None:
+                    smoothed["axis_base"] = axis
+            wheel_pos_now = vision.get("wheel_pos_base", vision["center_base"])
+            wheel_pos_prev = prev.get("wheel_pos_base", prev["center_base"])
+            smoothed["wheel_pos_base"] = alpha * wheel_pos_now + (1.0 - alpha) * wheel_pos_prev
+        else:
+            smoothed["wheel_pos_base"] = vision.get("wheel_pos_base", vision["center_base"]).copy()
+
+        if "spoke_dir_base" in smoothed and smoothed["spoke_dir_base"] is not None:
+            spoke_dir = _normalize_or_none(
+                smoothed["spoke_dir_base"]
+                - np.dot(smoothed["spoke_dir_base"], smoothed["axis_base"]) * smoothed["axis_base"]
+            )
+            smoothed["spoke_dir_base"] = spoke_dir
+        smoothed["wheel_R_base"] = self._construct_wheel_R_base(smoothed, fallback=vision)
+        smoothed["grasp_R_base"] = self._construct_grasp_R_base(smoothed)
+        self._smoothed_vision_geom = self._copy_vision_geom(smoothed)
+        return smoothed
+
+    def _construct_wheel_R_base(self, vision, fallback=None):
+        x_axis = _normalize_or_none(vision["axis_base"])
+        if x_axis is None:
+            return np.eye(3)
+        y_ref = vision.get("spoke_dir_base", None)
+        if y_ref is None and fallback is not None:
+            y_ref = fallback.get("spoke_dir_base", None)
+        if y_ref is None and fallback is not None and fallback.get("wheel_R_base", None) is not None:
+            y_ref = np.asarray(fallback["wheel_R_base"], dtype=float).reshape(3, 3)[:, 1]
+        if y_ref is None:
+            y_ref = vision["grasp_base"] - vision["center_base"]
+        y_axis = np.asarray(y_ref, dtype=float).reshape(3)
+        y_axis = y_axis - np.dot(y_axis, x_axis) * x_axis
+        y_axis = _normalize_or_none(y_axis)
+        if y_axis is None:
+            fallback_axis = np.array([0.0, 1.0, 0.0], dtype=float)
+            y_axis = _normalize_or_none(fallback_axis - np.dot(fallback_axis, x_axis) * x_axis)
+        if y_axis is None:
+            fallback_axis = np.array([0.0, 0.0, 1.0], dtype=float)
+            y_axis = _normalize_or_none(fallback_axis - np.dot(fallback_axis, x_axis) * x_axis)
+        z_axis = _normalize_or_none(np.cross(x_axis, y_axis))
+        if z_axis is None:
+            return np.eye(3)
+        y_axis = _normalize_or_none(np.cross(z_axis, x_axis))
+        if y_axis is None:
+            return np.eye(3)
+        return np.column_stack((x_axis, y_axis, z_axis))
+
+    def _construct_grasp_R_base(self, vision):
+        axis = _normalize_or_none(vision["axis_base"])
+        if axis is None:
+            return np.eye(3)
+        toward_robot = -np.asarray(vision["center_base"], dtype=float).reshape(3)
+        if float(np.dot(axis, toward_robot)) < 0.0:
+            axis = -axis
+        x_axis = _normalize_or_none(self.grasp_forward_axis_sign * axis)
+        if x_axis is None:
+            return np.eye(3)
+
+        radial = np.asarray(vision["grasp_base"], dtype=float).reshape(3) - np.asarray(
+            vision["center_base"], dtype=float
+        ).reshape(3)
+        radial = radial - np.dot(radial, x_axis) * x_axis
+        radial_axis = _normalize_or_none(self.grasp_radial_axis_sign * radial)
+        if radial_axis is None:
+            fallback = np.array([0.0, 0.0, 1.0], dtype=float)
+            radial_axis = _normalize_or_none(fallback - np.dot(fallback, x_axis) * x_axis)
+        if radial_axis is None:
+            return np.eye(3)
+
+        if self.grasp_radial_axis == "z":
+            z_axis = radial_axis
+            y_axis = _normalize_or_none(np.cross(z_axis, x_axis))
+            if y_axis is None:
+                return np.eye(3)
+            z_axis = _normalize_or_none(np.cross(x_axis, y_axis))
+        else:
+            y_axis = radial_axis
+            z_axis = _normalize_or_none(np.cross(x_axis, y_axis))
+            if z_axis is None:
+                return np.eye(3)
+            y_axis = _normalize_or_none(np.cross(z_axis, x_axis))
+
+        if y_axis is None or z_axis is None:
+            return np.eye(3)
+        return np.column_stack((x_axis, y_axis, z_axis))
+
+    def _latched_overlay_from_current_gt(self, gt_geom):
+        if not self.use_latched_after_approach or self._last_valid_approach_geom is None:
+            return None
+        if self._last_valid_approach_timestamp is None:
+            return None
+        age_s = time.time() - self._last_valid_approach_timestamp
+        if self.latched_geom_max_age_s >= 0.0 and age_s > self.latched_geom_max_age_s:
+            return None
+        latched = self._last_valid_approach_geom
+        overlay = dict(gt_geom)
+        for key in (
+            "center_base",
+            "grasp_base",
+            "axis_base",
+            "center_world",
+            "grasp_world",
+            "axis_world",
+            "wheel_pos_world",
+            "wheel_xmat_world",
+            "grasp_R_base",
+            "grasp_base_is_effective",
+        ):
+            if key in latched:
+                value = latched[key]
+                overlay[key] = value.copy() if hasattr(value, "copy") else value
+        overlay["geometry_source_used"] = "vision_latched"
+        overlay["latched_geometry_source"] = "vision_overlay"
+        return overlay
 
     def _build_overlay_geom(self, gt_geom, vision):
         overlay = dict(gt_geom)
@@ -349,6 +808,8 @@ class VisionOverlayGraspGeometryProvider:
         overlay["grasp_world"] = grasp_world
         overlay["axis_world"] = axis_world
         overlay["wheel_pos_world"] = wheel_pos_world
+        if "spoke_dir_base" in vision and vision["spoke_dir_base"] is not None:
+            overlay["spoke_dir_base"] = np.asarray(vision["spoke_dir_base"], dtype=float).reshape(3).copy()
         if "wheel_R_base" in vision:
             overlay["wheel_xmat_world"] = _rot3_or_raise(
                 base_to_world @ vision["wheel_R_base"],
@@ -372,6 +833,10 @@ class VisionOverlayGraspGeometryProvider:
             if self.override_angle:
                 overlay["valve_angle"] = float(vision["valve_angle"])
                 overlay["valve_vel"] = float(vision["valve_vel"])
+        overlay["pose_valid"] = bool(vision.get("pose_valid", False))
+        overlay["grasp_valid"] = bool(vision.get("grasp_valid", False))
+        overlay["grasp_latched"] = bool(vision.get("grasp_latched", False))
+        overlay["plane_aux_valid"] = bool(vision.get("plane_aux_valid", False))
         return overlay
 
     def _make_debug_payload(
@@ -382,19 +847,39 @@ class VisionOverlayGraspGeometryProvider:
         reason,
         vision_valid,
         vision_used_for_control,
+        state=None,
+        geometry_source_used="gt",
+        control_block_reason=None,
+        quality_pass=False,
+        temporal_outlier=False,
+        smoothing_applied=False,
+        latched_geometry_source="",
     ):
         vision_angle_valid = bool(vision.get("angle_valid", False)) if vision else False
+        control_block_reason = control_block_reason or reason
         payload = {
             "timestamp": time.time(),
             "mode": self.mode,
+            "state": state,
             "reason": reason,
+            "geometry_source_used": geometry_source_used,
+            "latched_geometry_source": latched_geometry_source,
             "vision_status_file": self.vision_status_file,
             "vision_valid": bool(vision_valid),
+            "pose_valid": bool(vision.get("pose_valid", False)) if vision else False,
+            "grasp_valid": bool(vision.get("grasp_valid", False)) if vision else False,
+            "grasp_latched": bool(vision.get("grasp_latched", False)) if vision else False,
+            "angle_valid": bool(vision_angle_valid),
+            "plane_aux_valid": bool(vision.get("plane_aux_valid", False)) if vision else False,
             "vision_angle_valid": bool(vision_valid and vision_angle_valid),
             "vision_override_angle": bool(self.override_angle),
             "vision_valve_angle": None,
             "vision_valve_vel": None,
             "vision_used_for_control": bool(vision_used_for_control),
+            "vision_control_block_reason": control_block_reason,
+            "vision_quality_pass": bool(quality_pass),
+            "vision_temporal_outlier": bool(temporal_outlier),
+            "vision_smoothing_applied": bool(smoothing_applied),
             "vision_fallback_to_gt": bool(self.fallback_to_gt),
             "center_error_m": None,
             "grasp_error_m": None,
@@ -437,7 +922,17 @@ class VisionOverlayGraspGeometryProvider:
         result = dict(geom)
         result["vision_debug"] = debug
         result["vision_valid"] = bool(debug.get("vision_valid", False))
+        result["pose_valid"] = bool(debug.get("pose_valid", False))
+        result["grasp_valid"] = bool(debug.get("grasp_valid", False))
+        result["grasp_latched"] = bool(debug.get("grasp_latched", False))
+        result["angle_valid"] = bool(debug.get("angle_valid", False))
+        result["plane_aux_valid"] = bool(debug.get("plane_aux_valid", False))
+        result["geometry_source_used"] = debug.get("geometry_source_used", "gt")
         result["vision_used_for_control"] = bool(debug.get("vision_used_for_control", False))
+        result["vision_control_block_reason"] = debug.get("vision_control_block_reason", "")
+        result["vision_quality_pass"] = bool(debug.get("vision_quality_pass", False))
+        result["vision_temporal_outlier"] = bool(debug.get("vision_temporal_outlier", False))
+        result["vision_smoothing_applied"] = bool(debug.get("vision_smoothing_applied", False))
         result["vision_angle_valid"] = bool(debug.get("vision_angle_valid", False))
         if debug.get("vision_angle_valid", False):
             result["vision_valve_angle"] = debug.get("vision_valve_angle", None)
@@ -492,13 +987,42 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 self.config.get("vision_status_file", "/tmp/falcon_valve_vision_status.json"),
                 mode=self.valve_geometry_source,
                 timeout_s=self.config.get("vision_timeout_s", 0.5),
-                fallback_to_gt=self.config.get("vision_fallback_to_gt", True),
+                fallback_to_gt=self.config.get(
+                    "vision_fallback_to_gt_when_invalid",
+                    self.config.get("vision_fallback_to_gt", True),
+                ),
                 override_control=self.config.get("vision_override_control", False),
                 override_angle=self.config.get("vision_override_angle", False),
                 debug_file=self.config.get(
                     "vision_overlay_debug_file",
                     "/tmp/falcon_valve_vision_overlay_debug.json",
                 ),
+                state_getter=lambda: self.task_state,
+                override_states=self.config.get(
+                    "vision_override_states",
+                    [self.WAIT_TASK_POSE, self.MOVE_PREGRASP, self.APPROACH_GRASP],
+                ),
+                use_quality_gate=self.config.get("vision_use_quality_gate", True),
+                log_control_source=self.config.get("vision_log_control_source", True),
+                min_center_points=self.config.get("vision_min_center_points", 200),
+                min_spoke_points=self.config.get("vision_min_spoke_points", 300),
+                min_grasp_points=self.config.get("vision_min_grasp_points", 50),
+                min_plane_aux_points=self.config.get("vision_min_plane_aux_points", 50),
+                max_plane_fit_error_m=self.config.get("vision_max_plane_fit_error_m", 0.006),
+                max_center_jump_m=self.config.get("vision_max_center_jump_m", 0.03),
+                max_grasp_jump_m=self.config.get("vision_max_grasp_jump_m", 0.04),
+                max_axis_jump_deg=self.config.get("vision_max_axis_jump_deg", 5.0),
+                smoothing_enable=self.config.get("vision_smoothing_enable", True),
+                smoothing_alpha=self.config.get("vision_smoothing_alpha", 0.35),
+                latch_last_valid_approach_geom=self.config.get(
+                    "vision_latch_last_valid_approach_geom",
+                    True,
+                ),
+                latched_geom_max_age_s=self.config.get("vision_latched_geom_max_age_s", 2.0),
+                use_latched_after_approach=self.config.get("vision_use_latched_after_approach", False),
+                grasp_forward_axis_sign=self.config.get("valve_grasp_forward_axis_sign", -1.0),
+                grasp_radial_axis=self.config.get("valve_grasp_radial_axis", "y"),
+                grasp_radial_axis_sign=self.config.get("valve_grasp_radial_axis_sign", 1.0),
             )
             self.logger.info(
                 colored(
@@ -547,6 +1071,18 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self.grasp_radial_axis_sign = float(self.config.get("valve_grasp_radial_axis_sign", 1.0))
         self.freeze_grasp_world_after_start = bool(self.config.get("valve_freeze_grasp_world_after_start", True))
         self.latch_grasp_frame_on_close = bool(self.config.get("valve_latch_grasp_frame_on_close", True))
+        self.vision_close_latch_source = str(
+            self.config.get("vision_close_latch_source", "current_control")
+        ).strip().lower()
+        if self.vision_close_latch_source not in ("current_control", "gt"):
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported vision_close_latch_source="
+                    f"{self.vision_close_latch_source}, using current_control",
+                    "yellow",
+                )
+            )
+            self.vision_close_latch_source = "current_control"
         self.hold_target_mode = str(self.config.get("valve_hold_target_mode", "valve_local")).lower()
         self.hold_latch_mode = str(self.config.get("valve_hold_latch_mode", "desired")).lower()
         self.hold_actual_to_desired_blend = float(
@@ -852,6 +1388,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._frozen_world_geom = None
         self._close_latched_world_geom = None
         self._close_latched_grasp_local = None
+        self._latched_geometry_source = ""
         self._hold_grasp_local = None
         self._close_success_started_t = None
         self._last_grasp_success_t = None
@@ -940,6 +1477,10 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 "contact_force_n,contact_force_peak_n,"
                 "angle_brake_enabled,angle_brake_torque,angle_brake_peak_torque,"
                 "base_approach_m,base_yaw_drift_deg,base_tilt_deg,max_base_tilt_deg,"
+                "vision_state,geometry_source_used,latched_geometry_source,"
+                "vision_used_for_control,vision_control_block_reason,"
+                "vision_quality_pass,vision_temporal_outlier,vision_smoothing_applied,"
+                "vision_valid,pose_valid,grasp_valid,grasp_latched,angle_valid,plane_aux_valid,"
                 "segment_result,failure_reason,abort_reason\n"
             )
         with open(self.summary_file, "w") as file:
@@ -1235,6 +1776,21 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         geom["axis_base"] = axis_base
         geom["grasp_R_base"] = world_to_base @ R_world
         geom["grasp_frame_latched"] = True
+        geom["latched_geometry_source"] = self._latched_geometry_source
+        if self._latched_geometry_source == "vision_overlay":
+            geom["geometry_source_used"] = "vision_latched"
+            geom["vision_used_for_control"] = True
+        elif self._latched_geometry_source == "gt":
+            geom["geometry_source_used"] = "gt"
+        debug = geom.get("vision_debug", None)
+        if isinstance(debug, dict):
+            debug = dict(debug)
+            debug["latched_geometry_source"] = self._latched_geometry_source
+            if self._latched_geometry_source == "vision_overlay":
+                debug["geometry_source_used"] = "vision_latched"
+                debug["vision_used_for_control"] = True
+                debug["vision_control_block_reason"] = "close_latched_geometry"
+            geom["vision_debug"] = debug
         return geom
 
     def _point_base_to_world(self, geom, point_base):
@@ -1412,24 +1968,55 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         if not self.latch_grasp_frame_on_close or self._close_latched_world_geom is not None:
             return self._control_geom(geom)
 
-        base_to_world = np.asarray(geom["world_to_base"], dtype=float).reshape(3, 3).T
-        center_base = np.asarray(geom["center_base"], dtype=float).reshape(3)
-        grasp_base = self._valve_grasp_point_base(geom)
-        axis_base = np.asarray(geom["axis_base"], dtype=float).reshape(3)
+        latch_geom = geom
+        latched_source = self._control_geometry_source(geom)
+        if self.vision_close_latch_source == "gt":
+            gt_geom = None
+            if hasattr(self.geometry_provider, "read_gt"):
+                gt_geom = self.geometry_provider.read_gt()
+            if gt_geom is not None:
+                latch_geom = gt_geom
+                latched_source = "gt"
+            else:
+                latched_source = f"{latched_source}_gt_unavailable"
+
+        base_to_world = np.asarray(latch_geom["world_to_base"], dtype=float).reshape(3, 3).T
+        center_base = np.asarray(latch_geom["center_base"], dtype=float).reshape(3)
+        grasp_base = self._valve_grasp_point_base(latch_geom)
+        axis_base = np.asarray(latch_geom["axis_base"], dtype=float).reshape(3)
         axis_world = base_to_world @ axis_base
         axis_world = axis_world / (np.linalg.norm(axis_world) + 1e-9)
-        R_base = self._right_grasp_rotation_base(geom)
+        R_base = self._right_grasp_rotation_base(latch_geom)
 
-        grasp_world = self._point_base_to_world(geom, grasp_base)
+        grasp_world = self._point_base_to_world(latch_geom, grasp_base)
         self._close_latched_world_geom = {
-            "center_world": self._point_base_to_world(geom, center_base),
+            "center_world": self._point_base_to_world(latch_geom, center_base),
             "grasp_world": grasp_world,
             "axis_world": axis_world,
             "grasp_R_world": base_to_world @ R_base,
         }
-        self._close_latched_grasp_local = self._world_to_valve_local(geom, grasp_world)
-        self.logger.info(colored("[VALVE_GRASP] close grasp frame latched", "cyan"))
-        return self._close_latched_geom(geom)
+        self._latched_geometry_source = "vision_overlay" if str(latched_source).startswith("vision") else "gt"
+        self._close_latched_grasp_local = self._world_to_valve_local(latch_geom, grasp_world)
+        self.logger.info(
+            colored(
+                "[VALVE_GRASP] close grasp frame latched "
+                f"(source={self._latched_geometry_source})",
+                "cyan",
+            )
+        )
+        return self._close_latched_geom(latch_geom)
+
+    def _control_geometry_source(self, geom):
+        if not geom:
+            return "gt"
+        source = str(geom.get("geometry_source_used", "")).strip()
+        if source:
+            if source == "vision_latched":
+                return "vision_overlay"
+            return source
+        if bool(geom.get("vision_used_for_control", False)):
+            return "vision_overlay"
+        return "gt"
 
     def _right_grasp_rotation_base(self, geom):
         if geom is not None and "grasp_R_base" in geom:
@@ -2827,6 +3414,39 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         debug_contact_pairs = "|".join(
             str(pair).replace(",", ";") for pair in geom.get("debug_contact_pairs", [])
         )
+        vision_debug = geom.get("vision_debug", {}) if isinstance(geom, dict) else {}
+        if not isinstance(vision_debug, dict):
+            vision_debug = {}
+        geometry_source_used = _csv_token(
+            geom.get("geometry_source_used", vision_debug.get("geometry_source_used", "gt"))
+        )
+        latched_geometry_source = _csv_token(
+            geom.get("latched_geometry_source", vision_debug.get("latched_geometry_source", ""))
+        )
+        vision_control_block_reason = _csv_token(
+            geom.get(
+                "vision_control_block_reason",
+                vision_debug.get("vision_control_block_reason", ""),
+            )
+        )
+        vision_used_for_control = bool(
+            geom.get("vision_used_for_control", vision_debug.get("vision_used_for_control", False))
+        )
+        vision_quality_pass = bool(
+            geom.get("vision_quality_pass", vision_debug.get("vision_quality_pass", False))
+        )
+        vision_temporal_outlier = bool(
+            geom.get("vision_temporal_outlier", vision_debug.get("vision_temporal_outlier", False))
+        )
+        vision_smoothing_applied = bool(
+            geom.get("vision_smoothing_applied", vision_debug.get("vision_smoothing_applied", False))
+        )
+        vision_valid = bool(geom.get("vision_valid", vision_debug.get("vision_valid", False)))
+        pose_valid = bool(geom.get("pose_valid", vision_debug.get("pose_valid", False)))
+        grasp_valid = bool(geom.get("grasp_valid", vision_debug.get("grasp_valid", False)))
+        grasp_latched = bool(geom.get("grasp_latched", vision_debug.get("grasp_latched", False)))
+        angle_valid = bool(geom.get("angle_valid", vision_debug.get("angle_valid", False)))
+        plane_aux_valid = bool(geom.get("plane_aux_valid", vision_debug.get("plane_aux_valid", False)))
 
         t = 0.0 if self._test_start_t is None else time.perf_counter() - self._test_start_t
         with open(self.log_file, "a") as file:
@@ -2879,6 +3499,12 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"{angle_brake_torque:.6f},{angle_brake_peak_torque:.6f},"
                 f"{base_approach_m:.6f},{base_yaw_drift_deg:.6f},"
                 f"{base_tilt_deg:.6f},{max_base_tilt_deg:.6f},"
+                f"{self.task_state},{geometry_source_used},{latched_geometry_source},"
+                f"{int(vision_used_for_control)},{vision_control_block_reason},"
+                f"{int(vision_quality_pass)},{int(vision_temporal_outlier)},"
+                f"{int(vision_smoothing_applied)},{int(vision_valid)},"
+                f"{int(pose_valid)},{int(grasp_valid)},{int(grasp_latched)},"
+                f"{int(angle_valid)},{int(plane_aux_valid)},"
                 f"{segment_result},{_csv_token(self._failure_reason)},"
                 f"{_csv_token(self._abort_reason)}\n"
             )

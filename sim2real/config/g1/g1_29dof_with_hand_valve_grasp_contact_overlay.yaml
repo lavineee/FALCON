@@ -14,8 +14,29 @@ valve_geometry_source: "gt"
 vision_status_file: "/tmp/falcon_valve_vision_status.json"
 vision_timeout_s: 0.5
 vision_fallback_to_gt: true
+vision_fallback_to_gt_when_invalid: true
 vision_override_control: false
 vision_override_angle: false
+vision_override_states:
+  - "wait_task_pose"
+  - "move_pregrasp"
+  - "approach_grasp"
+vision_use_quality_gate: true
+vision_log_control_source: true
+vision_close_latch_source: "current_control"
+vision_min_center_points: 200
+vision_min_spoke_points: 300
+vision_min_grasp_points: 50
+vision_min_plane_aux_points: 50
+vision_max_plane_fit_error_m: 0.006
+vision_max_center_jump_m: 0.03
+vision_max_grasp_jump_m: 0.04
+vision_max_axis_jump_deg: 5.0
+vision_smoothing_enable: true
+vision_smoothing_alpha: 0.35
+vision_latch_last_valid_approach_geom: true
+vision_latched_geom_max_age_s: 2.0
+vision_use_latched_after_approach: false
 vision_overlay_debug_file: "/tmp/falcon_valve_vision_overlay_debug.json"
 
 # Sim RGB-D color vision debug output. Disabled by default so the MuJoCo GT
