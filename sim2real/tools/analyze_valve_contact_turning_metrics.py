@@ -51,6 +51,10 @@ def load_csv(path):
         "contact_pairs",
         "real_contact_pairs",
         "debug_contact_pairs",
+        "task_state",
+        "segment_result",
+        "failure_reason",
+        "abort_reason",
     }
     rows = []
     with open(path) as file:
@@ -86,6 +90,9 @@ def summarize(rows):
             "contact_count": empty_stats,
             "real_contact_force": empty_stats,
             "real_contact_count": empty_stats,
+            "contact_health_ratio": empty_stats,
+            "soft_connect_active": empty_stats,
+            "angle_brake_torque_abs": empty_stats,
             "base_tilt": empty_stats,
             "base_to_valve_x": empty_stats,
             "base_to_valve_y": empty_stats,
@@ -107,6 +114,8 @@ def summarize(rows):
             "final_real_contact_count": math.nan,
             "final_real_contact_force": math.nan,
             "final_grasp_success": math.nan,
+            "failure_reason": "",
+            "abort_reason": "",
         }
 
     selected = turn_rows(rows)
@@ -172,6 +181,9 @@ def summarize(rows):
         "real_contact_count": _stats(
             [row.get("real_contact_count", row.get("contact_count")) for row in analysis_rows]
         ),
+        "contact_health_ratio": _stats([row.get("contact_health_ratio") for row in analysis_rows]),
+        "soft_connect_active": _stats([row.get("soft_connect_active") for row in analysis_rows]),
+        "angle_brake_torque_abs": _abs_stats([row.get("angle_brake_torque") for row in analysis_rows]),
         "base_tilt": _stats(base_tilt),
         "base_to_valve_x": _stats([row.get("base_to_valve_x") for row in analysis_rows]),
         "base_to_valve_y": _stats([row.get("base_to_valve_y") for row in analysis_rows]),
@@ -195,6 +207,8 @@ def summarize(rows):
             last.get("real_contact_normal_force", last.get("contact_normal_force", math.nan))
         ),
         "final_grasp_success": float(last.get("grasp_success", math.nan)),
+        "failure_reason": str(run_last.get("failure_reason", "")),
+        "abort_reason": str(run_last.get("abort_reason", "")),
     }
 
 
@@ -232,6 +246,9 @@ def write_report(path, csv_path, summary):
         f"- `grasp_success` 占比：`{summary['success_fraction']:.2f}`",
         f"- `PTIM` 完整接触占比：`{summary['ptim_fraction']:.2f}`",
         f"- 真实手部 `PTIM` 占比：`{summary['real_ptim_fraction']:.2f}`",
+        f"- contact health ratio 均值 / P90：`{summary['contact_health_ratio']['mean']:.2f} / {summary['contact_health_ratio']['p90']:.2f}`",
+        f"- soft connect active ratio：`{summary['soft_connect_active']['mean']:.2f}`",
+        f"- angle brake torque 峰值：`{summary['angle_brake_torque_abs']['max']:.2f}`",
         f"- base tilt 均值 / P90：`{summary['base_tilt']['mean']:.2f} / {summary['base_tilt']['p90']:.2f} deg`",
         f"- base 到阀门中心 dx 均值 / P90：`{summary['base_to_valve_x']['mean']:.3f} / {summary['base_to_valve_x']['p90']:.3f} m`",
         f"- base 到阀门中心 dy 均值 / P90：`{summary['base_to_valve_y']['mean']:.3f} / {summary['base_to_valve_y']['p90']:.3f} m`",
@@ -239,6 +256,8 @@ def write_report(path, csv_path, summary):
         f"- 整次运行 base 靠近量：`{summary['run_base_approach_m']:.3f} m`",
         f"- 转动/保持阶段 base yaw 漂移：`{summary['turn_base_yaw_drift_deg']:.2f} deg`",
         f"- 整次运行 base yaw 漂移：`{summary['run_base_yaw_drift_deg']:.2f} deg`",
+        f"- failure_reason：`{summary['failure_reason']}`",
+        f"- abort_reason：`{summary['abort_reason']}`",
     ]
     with open(path, "w") as file:
         file.write("\n".join(lines) + "\n")
@@ -331,6 +350,11 @@ def main():
     print(f"run_base_yaw_drift_deg={summary['run_base_yaw_drift_deg']:.6f}")
     print(f"success_fraction={summary['success_fraction']:.6f}")
     print(f"ptim_fraction={summary['ptim_fraction']:.6f}")
+    print(f"contact_health_ratio_mean={summary['contact_health_ratio']['mean']:.6f}")
+    print(f"soft_connect_active_ratio={summary['soft_connect_active']['mean']:.6f}")
+    print(f"angle_brake_peak_torque={summary['angle_brake_torque_abs']['max']:.6f}")
+    print(f"failure_reason={summary['failure_reason']}")
+    print(f"abort_reason={summary['abort_reason']}")
     if args.report:
         write_report(args.report, args.csv_path, summary)
     maybe_plot(rows, args.plot)

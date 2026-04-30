@@ -524,3 +524,79 @@ move_pregrasp -> approach_grasp -> close_hand -> pre_turn_settle -> turn_valve -
 - 提速并没有导致角度失控，反而减少了持续接触拖拽时间；
 - 后续扩大目标角时，必须继续使用这套稳定性门限，不能只报告阀门角度误差；
 - 如果 20/30 度出现稳定性失败，优先考虑分段转动、缩短每段接触时间、降低径向推压，而不是单纯增大软连接刚度。
+
+## 阶段 9：严格单目标工作区间评估
+
+日期：2026-04-27
+
+用户指出：阀门角度“到过目标”不应等于任务成功，机器人必须在目标附近保持住，并且手爪不能在 hold 阶段脱离。考虑到人手大角度拧阀门也会分段重抓，当前目标调整为：先找到单次稳定工作区间，而不是强行追求 90/120 度单次旋转。
+
+本轮修改：
+
+- 在 `loco_manip_valve_grasp_contact_7dof_with_hand.py` 中加入目标保持质量门槛：
+  - 到达目标后继续检查角度误差、阀门角速度、抓握状态、接触健康度和相对滑移；
+  - 若角度已到但抓握丢失，任务判失败；
+  - summary 中记录 `final_grasp_success`、`final_contact_health_ratio`、`final_relative_slip_m` 等字段。
+- 在 `launch_valve_contact_turning_7dof_with_hand_auto.sh` 中加入 `strictXX` 单目标 preset：
+  - 例如 `strict30`、`strict45`、`strict60`；
+  - 初始默认速度 `1.0 deg/s`，后续 45 度区间优化为 `0.9 deg/s`；
+  - 完成条件要求 hold 稳定；
+  - strict preset 使用稳定三点包络判据：掌心 + 拇指 + 至少一根手指，同时要求最终接触健康比例不低于 `0.75`。
+- 在 `launch_valve_grasp_contact_7dof_with_hand_policy.sh` 中增加环境变量：
+  - `VALVE_GRASP_SUCCESS_REQUIRE_INDEX`
+  - `VALVE_GRASP_SUCCESS_REQUIRE_MIDDLE`
+  - `VALVE_GRASP_SUCCESS_REQUIRE_REAL_HAND_CONTACT`
+  - `VALVE_CONTACT_ASSIST_RELEASE_ON_TURN_HOLD`
+
+运行入口：
+
+```bash
+cd /home/lavine/project/FALCON
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict30
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict45
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict60
+```
+
+验证记录：
+
+- `artifacts/demo_logs/valve_contact_turning_20260427_173134.csv`
+  - `strict30`；
+  - 最终角度约 `30.43 deg`，误差约 `-0.43 deg`；
+  - 最终抓握成立，最终滑移约 `4.4 mm`；
+  - 判定成功。
+- `artifacts/demo_logs/valve_contact_turning_20260427_173802.csv`
+  - `strict45`；
+  - 最终角度约 `44.62 deg`，误差约 `0.38 deg`；
+  - 最终抓握成立，最终滑移约 `1.7 cm`；
+  - 判定成功。
+- `artifacts/demo_logs/valve_contact_turning_20260427_181805.csv`
+  - `strict45`，速度 `1.0 deg/s`；
+  - 最终角度约 `44.45 deg`，但 hold 阶段最终接触健康比例降到 `0.50`；
+  - 严格判定失败，说明 45 度区间的主要不确定性来自 hold 阶段接触拓扑，而不是角度闭环。
+- `artifacts/demo_logs/valve_contact_turning_20260427_182841.csv`
+  - `strict45`，速度 `0.9 deg/s`；
+  - 最终角度约 `44.86 deg`，误差约 `0.14 deg`；
+  - 最终抓握成立，滑移 p90 约 `2.6 cm`，峰值接触力约 `40.5 N`；
+  - 判定成功。
+- `artifacts/demo_logs/valve_contact_turning_20260427_183028.csv`
+  - 更新默认 `strict45` preset 后复测；
+  - 最终角度约 `45.61 deg`，误差约 `-0.61 deg`；
+  - 最终抓握成立，滑移 p90 约 `3.2 cm`，峰值接触力约 `51.7 N`；
+  - 判定成功。
+- `artifacts/demo_logs/valve_contact_turning_20260427_173908.csv`
+  - `strict60`；
+  - 最终角度约 `59.99 deg`，误差约 `0.01 deg`；
+  - 但最终接触健康比例降到 `0.50`，`final_grasp_success=false`；
+  - 判定失败。
+- `artifacts/demo_logs/valve_contact_turning_strict_single_turn_090deg_entry50_20260427_173000.csv`
+  - `strict90`；
+  - 角度几乎精确到达，但最终抓握丢失、接触健康比例 `0.25`、滑移约 `16 cm`；
+  - 判定失败。
+
+当前结论：
+
+- 当前可作为展示 baseline 的稳定单次工作区间约为 `30-45 deg`；
+- 对 `45 deg` 单目标，`0.9 deg/s` 比 `1.0 deg/s` 更稳健，比 `0.8 deg/s` 的角度误差更小；
+- `60 deg` 以上不是“角度控制做不到”，而是闭链抓握质量在 hold 阶段不足；
+- 后续若需要实现大角度阀门转动，应采用“转一段、重置抓点、再转一段”的分段方案；
+- 当前论文/组会中可以强调：我们已经建立了严格的成功判据，避免把 soft connect 或 angle brake 带来的角度到达误判为稳定抓握操作。

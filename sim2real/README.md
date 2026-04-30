@@ -725,6 +725,24 @@ DURATION_SEC=55 \
 bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh
 ```
 
+严格单目标工作区间测试：
+
+```bash
+cd /home/lavine/project/FALCON
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict30
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict45
+bash sim2real/launch_valve_contact_turning_7dof_with_hand_auto.sh strict60
+```
+
+`strictXX` preset 不修改默认展示序列，只用于评估单次转动能力边界。它会启用：
+
+- 单目标转角 `XX deg`，当前支持 `10/20/30/45/60/75/90/120`。
+- 较慢参考速度 `0.9 deg/s`。这是当前 45 度区间内角度精度和抓握滑移之间较好的折中。
+- 到达目标后继续保持，要求角度误差、阀门角速度和抓握质量同时稳定。
+- 稳定三点包络判据：掌心 + 拇指 + 至少一根手指；不强制食指和中指同时持续接触。
+- 最终接触健康比例不低于 `0.75`，相对滑移不超过 `0.12 m`。
+- 默认仍在 `turn_hold` 阶段释放柔顺 `connect`，用真实接触和 angle brake 检查最终保持质量；如需诊断可用 `VALVE_CONTACT_ASSIST_RELEASE_ON_TURN_HOLD=0` 临时覆盖。
+
 CSV 关键字段：
 
 - `turn_reference_delta_deg`：参考转角。
@@ -756,6 +774,12 @@ MPLCONFIGDIR=/tmp/matplotlib /home/lavine/miniconda3/envs/fcreal/bin/python \
 - `artifacts/demo_logs/valve_contact_turning_20260426_234055.csv`：目标 `10 deg`，最终 `9.27 deg`，最终误差 `0.73 deg`。
 - `artifacts/demo_logs/valve_contact_turning_20260427_073819.csv`：目标 `10 deg`，使用柔顺 `connect` + hold 阶段角度制动。`turn_hold` 末尾实际约 `12.83 deg`，后续 `done` 阶段收敛到约 `11.26 deg`，最终误差约 `-1.26 deg`。
 - `artifacts/demo_logs/valve_contact_turning_20260427_080148.csv`：目标 `10 deg`，加入姿态/站位失败判据并把速度提高到 `1.5 deg/s`。`turn_hold` 末尾实际约 `9.74 deg`，整次运行末尾实际约 `10.20 deg`；转动/保持阶段 base 靠近约 `6.4 cm`，yaw 漂移约 `4.8 deg`，未触发稳定性失败判据。
+- `artifacts/demo_logs/valve_contact_turning_20260427_173134.csv`：`strict30`，目标 `30 deg`，最终约 `30.43 deg`，误差约 `-0.43 deg`，最终抓握成立，最终滑移约 `4.4 mm`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_173802.csv`：`strict45`，目标 `45 deg`，最终约 `44.62 deg`，误差约 `0.38 deg`，最终抓握成立，最终滑移约 `1.7 cm`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_182841.csv`：`strict45`，速度 `0.9 deg/s`，目标 `45 deg`，最终约 `44.86 deg`，误差约 `0.14 deg`，最终抓握成立，滑移 p90 约 `2.6 cm`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_183028.csv`：更新默认 `strict45` preset 后复测，目标 `45 deg`，最终约 `45.61 deg`，误差约 `-0.61 deg`，最终抓握成立，滑移 p90 约 `3.2 cm`。
+- `artifacts/demo_logs/valve_contact_turning_20260427_173908.csv`：`strict60`，目标角度可到达，但最终接触健康降到 `0.50` 且 `final_grasp_success=false`，按严格保持标准判失败。
+- `artifacts/demo_logs/valve_contact_turning_strict_single_turn_090deg_entry50_20260427_173000.csv`：`strict90`，角度可到达，但最终抓握丢失、滑移约 `16 cm`，判失败。
 - 稳定性报告：`artifacts/demo_logs/valve_contact_turning_stability_guard_10deg_report.md`。
 - 稳定性图表：`artifacts/demo_logs/valve_contact_turning_stability_guard_10deg_report.png`。
 - 对比图：`artifacts/demo_logs/valve_contact_turning_contact_demo_summary_20260426_211334_211432.png`。
@@ -765,9 +789,10 @@ MPLCONFIGDIR=/tmp/matplotlib /home/lavine/miniconda3/envs/fcreal/bin/python \
 
 当前局限：
 
-- 当前可靠验证到 `10 deg` 小角度 baseline，还不能直接代表 30/45/60 度大角度转动。
+- 当前严格单次工作区间初步验证到 `45 deg`；`60 deg` 和 `90 deg` 虽然角度能到，但 hold 阶段抓握质量不足，不应作为稳定 demo。
+- 受手臂构型和闭链约束影响，单次转动不宜盲目追求大角度；更大的阀门角度应采用“转一段、重置抓点、再转一段”的分段策略。
 - 转动后半段接触力可能下降，接触拓扑会从 `PTIM` 退化为局部接触。
-- 当前已经把 base 过近、base yaw 大漂移和 base tilt 纳入失败判据；以后扩大目标角时，必须同时满足角度误差和稳定性指标。
+- 当前把 base 靠近和 yaw 漂移记录为质量指标，只有明显摔倒、撞阀门、手脱离或接触/滑移失控才判失败；以后扩大目标角时，仍应同时报告角度误差、base 漂移和抓握健康度。
 - 没有使用永久 `weld`，但当前默认启用了柔顺 `connect` 和 hold 阶段角度制动。它们是仿真 demo 的工程近似，不应表述为纯真实接触抓握。
 - 手指接触几何、摩擦和阀门物理参数仍经过 demo 调整，后续需要继续向真实硬件参数收敛。
 - 当前环境没有可直接调用的 `ffmpeg`，本轮没有自动生成视频；需要录视频时先用桌面录屏工具录 MuJoCo 窗口，保存到 `artifacts/demo_videos/`。
@@ -784,9 +809,38 @@ MPLCONFIGDIR=/tmp/matplotlib /home/lavine/miniconda3/envs/fcreal/bin/python \
 
 需要实时 onboard 推理时，纯 Python 的 `unitree_sdk2_python` 可能无法保证 Jetson Orin 上的实时性。FALCON 原作者建议使用 C++ 后端加 pybinding 的 `unitree_sdk2` 方案。
 
+## 视觉模块接入准备
+
+当前阀门任务仍使用 MuJoCo 提供的特权信息读取阀门中心、轴线、抓点和角度。下一阶段计划在独立分支中接入仿真视觉模块，目标不是立即替换整条控制链路，而是先把“感知输出”做成和现有 privileged 接口一致的数据结构，再逐步替换来源。
+
+建议新分支名称：
+
+```bash
+feature-valve-vision-module
+```
+
+第一阶段建议保持以下边界：
+
+- 不改动已跑通的阀门接触转动 baseline。
+- 不改动现有阀门 XML 和手部控制器。
+- 新增视觉模块时，先输出阀门 `center / axis / grasp_point / angle` 的估计值。
+- 控制侧继续消费统一的阀门状态接口，避免把视觉算法和 IK / valve turning 状态机直接耦合。
+- 仿真阶段可以先使用 MuJoCo 内置相机或渲染图像做验证，但所有使用 privileged ground truth 的地方需要明确标注。
+
+推荐接入顺序：
+
+1. 只读梳理当前阀门状态来源，确认哪些字段来自 MuJoCo site、body、joint。
+2. 新增视觉数据结构和日志，不改变控制输入。
+3. 新增仿真相机读取和图像保存脚本，先离线验证阀门检测。
+4. 将视觉估计结果写入与现有 `SIM_STATUS_FILE` 类似的中间状态文件。
+5. 在受控 demo 中切换阀门状态来源：`privileged` / `vision_debug` / `vision`。
+
+相关准备记录见 `docs/worklogs/vision_module_branch_prep_2026-05-01.md`。
+
 ## 相关文档
 
 - `WORKLOG_ee_tracking_with_hand.md`：本阶段末端跟踪和带手模型工作的中文记录。
+- `docs/worklogs/vision_module_branch_prep_2026-05-01.md`：视觉模块新分支准备记录。
 - 旧版 `README_valve_demo.md` 已合并到本 README，仓库内不再单独维护。
 
 ## 文档维护约定

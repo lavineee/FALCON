@@ -70,6 +70,11 @@ def _parse_float_sequence(value):
     return [float(part) for part in parts if part]
 
 
+def _csv_token(value):
+    """Keep diagnostic strings one-column safe without quoting every CSV row manually."""
+    return str(value).replace(",", ";").replace("\n", " ").replace("\r", " ")
+
+
 class SimStatusGraspGeometryProvider:
     """从 MuJoCo status 读取抓握几何；后续实机可替换成视觉估计输出。"""
 
@@ -308,6 +313,51 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         )
         self.turn_min_s = float(self.config.get("valve_turn_min_s", 0.5))
         self.turn_hold_s = float(self.config.get("valve_turn_hold_s", self.hold_s))
+        self.turn_hold_command_mode = str(
+            self.config.get("valve_turn_hold_command_mode", "current")
+        ).strip().lower()
+        if self.turn_hold_command_mode not in ("current", "target", "actual"):
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported valve_turn_hold_command_mode="
+                    f"{self.turn_hold_command_mode}, using current",
+                    "yellow",
+                )
+            )
+            self.turn_hold_command_mode = "current"
+        self.turn_segment_settle_enabled = bool(
+            self.config.get("valve_turn_segment_settle_enabled", False)
+        )
+        self.turn_segment_settle_error_deg = abs(
+            float(self.config.get("valve_turn_segment_settle_error_deg", 1.5))
+        )
+        self.turn_segment_settle_vel_deg_s = abs(
+            float(self.config.get("valve_turn_segment_settle_vel_deg_s", 1.0))
+        )
+        self.turn_segment_settle_s = max(
+            0.0,
+            float(self.config.get("valve_turn_segment_settle_s", 0.8)),
+        )
+        default_segment_settle_max_s = max(self.turn_hold_s + 2.0, self.turn_hold_s)
+        self.turn_segment_settle_max_s = max(
+            self.turn_hold_s,
+            float(self.config.get("valve_turn_segment_settle_max_s", default_segment_settle_max_s)),
+        )
+        self.turn_completion_require_grasp = bool(
+            self.config.get("valve_turn_completion_require_grasp", self.turn_segment_settle_enabled)
+        )
+        self.turn_completion_min_contact_health_ratio = float(
+            self.config.get("valve_turn_completion_min_contact_health_ratio", 0.5)
+        )
+        self.turn_completion_max_slip_m = float(
+            self.config.get("valve_turn_completion_max_slip_m", 0.12)
+        )
+        self.turn_completion_max_grasp_error_m = float(
+            self.config.get("valve_turn_completion_max_grasp_error_m", float("inf"))
+        )
+        self.turn_completion_timeout_is_failure = bool(
+            self.config.get("valve_turn_completion_timeout_is_failure", self.turn_segment_settle_enabled)
+        )
         self.turn_entry_min_hold_s = float(self.config.get("valve_turn_entry_min_hold_s", 0.4))
         self.turn_entry_max_slip_m = float(self.config.get("valve_turn_entry_max_slip_m", 0.045))
         self.turn_entry_require_success = bool(self.config.get("valve_turn_entry_require_success", True))
@@ -461,6 +511,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
 
         self.task_state = self.WAIT_GEOMETRY
         self._state_enter_t = time.perf_counter()
+        root, ext = os.path.splitext(self.log_file)
+        self.summary_file = f"{root}_summary.jsonl" if root else f"{self.log_file}_summary.jsonl"
         self._task_ready_t = None
         self._latest_geom = None
         self._current_target_base = np.array([self.EE_right_x, self.EE_right_y, self.EE_right_z], dtype=float)
@@ -486,6 +538,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._turn_reference_delta_deg = 0.0
         self._turn_command_delta_deg = 0.0
         self._turn_hold_command_delta_deg = None
+        self._turn_hold_settle_ok_started_t = None
+        self._turn_hold_quality_reason = ""
         self._turn_final_error_deg = self.turn_target_deg
         self._turn_sequence_zero_angle = None
         self._turn_cmd_deg = 0.0
@@ -493,6 +547,10 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._turn_start_base_to_valve_x_m = None
         self._turn_start_base_yaw_deg = None
         self._turn_rows = []
+        self._turn_segment_summaries = []
+        self._overall_summary_written = False
+        self._failure_reason = ""
+        self._abort_reason = ""
         self._current_command_grasp_base = None
         self._slip_grasp_local = None
         self._slip_palm_R_local = None
@@ -541,7 +599,34 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 "right_thumb_tau0,right_thumb_tau1,right_thumb_tau2,"
                 "right_hand_hold_latched,right_thumb_close_progress,right_finger_close_progress,"
                 "right_thumb_target_close_progress,right_finger_target_close_progress,"
-                "contact_pairs,real_contact_pairs,debug_contact_pairs\n"
+                "contact_pairs,real_contact_pairs,debug_contact_pairs,"
+                "task_state,segment_id,segment_count,target_delta_deg,target_cumulative_deg,"
+                "valve_angle_deg,valve_target_angle_deg,valve_angle_error_deg,valve_vel_deg_s,"
+                "right_eef_pos_error_m,right_eef_orientation_error_deg,"
+                "hand_valve_contact_count,finger1_valve_contact_count,"
+                "finger2_valve_contact_count,finger3_valve_contact_count,"
+                "contact_health_score,contact_health_ratio,"
+                "soft_connect_active,soft_connect_active_ratio,"
+                "contact_force_n,contact_force_peak_n,"
+                "angle_brake_enabled,angle_brake_torque,angle_brake_peak_torque,"
+                "base_approach_m,base_yaw_drift_deg,base_tilt_deg,max_base_tilt_deg,"
+                "segment_result,failure_reason,abort_reason\n"
+            )
+        with open(self.summary_file, "w") as file:
+            file.write(
+                json.dumps(
+                    {
+                        "type": "metadata",
+                        "log_file": self.log_file,
+                        "sequence_target_deg": (
+                            list(self.turn_target_sequence_deg)
+                            if self.turn_target_sequence_deg
+                            else [float(self.turn_target_deg)]
+                        ),
+                    },
+                    ensure_ascii=True,
+                )
+                + "\n"
             )
 
     def _enter_state(self, state):
@@ -549,11 +634,17 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             return
         self.task_state = state
         self._state_enter_t = time.perf_counter()
+        if state == self.FAILED:
+            if not self._failure_reason:
+                self._failure_reason = self._abort_reason or "entered_failed_state"
+            self._summarize_turn(result="failed", failure_reason=self._failure_reason)
+            self._write_overall_summary(overall_result="failed")
         if state == self.CLOSE_HAND:
             self._close_success_started_t = None
         if state == self.TURN_HOLD:
             # 到目标角附近后应停止追加圆弧运动；实机上对应“保持当前手端位置”。
-            self._turn_hold_command_delta_deg = float(self._turn_command_delta_deg)
+            if self._turn_hold_command_delta_deg is None:
+                self._turn_hold_command_delta_deg = float(self._turn_command_delta_deg)
             if self.contact_assist_release_on_turn_hold and self._contact_assist_active:
                 # 软连接只作为抓住后传力近似；进入目标保持阶段后释放，避免继续把阀门推过头。
                 self._set_contact_assist(False)
@@ -562,6 +653,22 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 hold_target = self._turn_start_angle + float(np.deg2rad(self.turn_target_deg))
                 self._write_valve_angle_hold(True, hold_target)
         self.logger.info(colored(f"[VALVE_GRASP] state -> {state}", "cyan"))
+        if state == self.DONE:
+            self._write_overall_summary(overall_result="done")
+
+    def _set_failure_reason(self, reason, abort=False):
+        reason = _csv_token(reason or "unknown")
+        if abort:
+            self._abort_reason = reason
+        if not self._failure_reason:
+            self._failure_reason = reason
+
+    def _write_summary_record(self, record):
+        summary_dir = os.path.dirname(self.summary_file)
+        if summary_dir:
+            os.makedirs(summary_dir, exist_ok=True)
+        with open(self.summary_file, "a") as file:
+            file.write(json.dumps(record, ensure_ascii=True, allow_nan=True) + "\n")
 
     def _write_attach_state(self, enabled):
         self._write_control_file(
@@ -1311,6 +1418,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._turn_reference_delta_deg = 0.0
         self._turn_command_delta_deg = 0.0
         self._turn_hold_command_delta_deg = None
+        self._turn_hold_settle_ok_started_t = None
         self._turn_final_error_deg = self.turn_target_deg
         self._turn_cmd_deg = 0.0
         self._last_turn_update_t = None
@@ -1328,11 +1436,93 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"radius={np.linalg.norm(self._turn_r0_world):.3f}m "
                 f"motion_radius={self._turn_motion_radius_m():.3f}m "
                 f"radius_mode={self.turn_radius_mode} "
-                f"mode={self.turn_control_mode}",
+                f"mode={self.turn_control_mode} "
+                f"segment_settle={'on' if self.turn_segment_settle_enabled else 'off'}",
                 "green",
             )
         )
         self._enter_state(self.TURN_VALVE)
+
+    def _turn_completion_quality(self, geom, robot_state_data):
+        """目标角保持阶段的抓握质量门槛；避免手已经脱开但角度恰好到位。"""
+        reasons = []
+        if self.turn_completion_require_grasp and not self._grasp_success(geom):
+            reasons.append("grasp_lost")
+
+        _, _, contact_health_ratio = self._contact_health(geom)
+        if contact_health_ratio < self.turn_completion_min_contact_health_ratio:
+            reasons.append(
+                "contact_health="
+                f"{contact_health_ratio:.2f}<{self.turn_completion_min_contact_health_ratio:.2f}"
+            )
+
+        relative_slip = self._relative_grasp_slip_m(geom, robot_state_data)
+        if (
+            self.turn_completion_max_slip_m > 0.0
+            and np.isfinite(relative_slip)
+            and relative_slip > self.turn_completion_max_slip_m
+        ):
+            reasons.append(f"slip={relative_slip:.4f}>{self.turn_completion_max_slip_m:.4f}m")
+
+        grasp_error = self._physical_grasp_error(geom, robot_state_data)
+        if (
+            np.isfinite(self.turn_completion_max_grasp_error_m)
+            and self.turn_completion_max_grasp_error_m > 0.0
+            and np.isfinite(grasp_error)
+            and grasp_error > self.turn_completion_max_grasp_error_m
+        ):
+            reasons.append(
+                f"grasp_error={grasp_error:.4f}>{self.turn_completion_max_grasp_error_m:.4f}m"
+            )
+
+        return len(reasons) == 0, "|".join(reasons)
+
+    def _turn_hold_ready_for_next_segment(self, geom, robot_state_data):
+        elapsed = time.perf_counter() - self._state_enter_t
+        if not self.turn_segment_settle_enabled:
+            if elapsed < self.turn_hold_s:
+                return False, None
+            quality_ok, quality_reason = self._turn_completion_quality(geom, robot_state_data)
+            self._turn_hold_quality_reason = quality_reason
+            if self.turn_completion_timeout_is_failure and not quality_ok:
+                return False, f"turn_hold_quality_failed:{quality_reason or 'unknown'}"
+            return True, None
+
+        actual_delta = self._turn_actual_delta_deg(geom) if self._turn_started else 0.0
+        final_error = abs(float(self.turn_target_deg - actual_delta))
+        valve_vel_deg_s = abs(float(np.rad2deg(float(geom.get("valve_vel", 0.0)))))
+        quality_ok, quality_reason = self._turn_completion_quality(geom, robot_state_data)
+        self._turn_hold_quality_reason = quality_reason
+        stable_now = (
+            final_error <= self.turn_segment_settle_error_deg
+            and valve_vel_deg_s <= self.turn_segment_settle_vel_deg_s
+            and quality_ok
+        )
+        now = time.perf_counter()
+        if stable_now:
+            if self._turn_hold_settle_ok_started_t is None:
+                self._turn_hold_settle_ok_started_t = now
+        else:
+            self._turn_hold_settle_ok_started_t = None
+
+        stable_s = (
+            0.0
+            if self._turn_hold_settle_ok_started_t is None
+            else now - self._turn_hold_settle_ok_started_t
+        )
+        if elapsed >= self.turn_hold_s and stable_s >= self.turn_segment_settle_s:
+            return True, None
+        if elapsed >= self.turn_segment_settle_max_s:
+            if self.turn_completion_timeout_is_failure:
+                reason = (
+                    f"turn_hold_settle_timeout:error={final_error:.2f}deg "
+                    f"vel={valve_vel_deg_s:.2f}deg_s"
+                )
+                if quality_reason:
+                    reason += f" {quality_reason}"
+                return False, reason
+            return True, None
+        return False, None
 
     def _begin_pre_turn_settle(self, geom):
         # connect 刚打开时可能仍有几厘米几何残差；先保持阀门硬锁，让手臂和接触约束卸载。
@@ -1537,7 +1727,18 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             and target_reached
         )
         if not hold_reference and (early_target_reached or (turn_time_done and (target_reached or turn_timed_out))):
+            self._prepare_turn_hold_command(geom)
             self._enter_state(self.TURN_HOLD)
+
+    def _prepare_turn_hold_command(self, geom):
+        """选择进入目标保持阶段时的手端圆弧命令，避免把闭环 lead 当作最终目标。"""
+        if self.turn_hold_command_mode == "target":
+            hold_delta = self.turn_target_deg
+        elif self.turn_hold_command_mode == "actual":
+            hold_delta = self._turn_actual_delta_deg(geom)
+        else:
+            hold_delta = self._turn_command_delta_deg
+        self._turn_hold_command_delta_deg = self._clamp_turn_command_delta(float(hold_delta))
 
     def _hold_turn_command_target(self, geom, robot_state_data=None):
         """保持进入 turn_hold 时的手端命令，避免到达目标后继续推阀门。"""
@@ -1552,28 +1753,157 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             robot_state_data=robot_state_data,
         )
 
-    def _summarize_turn(self):
+    def _summarize_turn(self, result="completed", failure_reason=""):
         if not self._turn_rows:
             return
-        rows = np.asarray(self._turn_rows, dtype=float)
-        # columns: angle_error, final_error, ee_error, relative_slip, actual_delta
-        angle_error = rows[:, 0]
-        final_error = rows[:, 1]
-        ee_error = rows[:, 2]
-        relative_slip = rows[:, 3]
-        actual_delta = rows[:, 4]
+        rows = list(self._turn_rows)
+
+        def vals(key):
+            return np.asarray([float(row.get(key, np.nan)) for row in rows], dtype=float)
+
+        def finite_vals(key):
+            arr = vals(key)
+            return arr[np.isfinite(arr)]
+
+        def mean_or_nan(key):
+            arr = finite_vals(key)
+            return float(np.mean(arr)) if arr.size else np.nan
+
+        def p90_or_nan(key):
+            arr = finite_vals(key)
+            return float(np.nanpercentile(arr, 90)) if arr.size else np.nan
+
+        def max_or_nan(key, abs_value=False):
+            arr = finite_vals(key)
+            if not arr.size:
+                return np.nan
+            if abs_value:
+                arr = np.abs(arr)
+            return float(np.max(arr))
+
+        def last_or_nan(key):
+            if not rows:
+                return np.nan
+            try:
+                value = float(rows[-1].get(key, np.nan))
+            except (TypeError, ValueError):
+                return np.nan
+            return value if np.isfinite(value) else np.nan
+
+        angle_error = vals("turn_angle_error_deg")
+        final_error = vals("turn_final_error_deg")
+        actual_delta = vals("turn_actual_delta_deg")
+        segment_summary = {
+            "type": "segment",
+            "trial_id": os.path.splitext(os.path.basename(self.log_file))[0],
+            "segment_id": int(self._turn_sequence_index + 1),
+            "segment_count": int(max(1, len(self.turn_target_sequence_deg))),
+            "target_delta_deg": float(self.turn_target_deg),
+            "target_cumulative_deg": float(self._turn_sequence_cumulative_target_deg()),
+            "actual_delta_deg": float(actual_delta[-1]) if actual_delta.size else np.nan,
+            "final_error_deg": float(final_error[-1]) if final_error.size else np.nan,
+            "trajectory_mae_deg": float(np.mean(np.abs(angle_error))) if angle_error.size else np.nan,
+            "eef_mean_error_m": mean_or_nan("right_eef_pos_error_m"),
+            "slip_p90_m": p90_or_nan("relative_slip_m"),
+            "final_relative_slip_m": last_or_nan("relative_slip_m"),
+            "grasp_success_ratio": mean_or_nan("grasp_success"),
+            "final_grasp_success": bool(last_or_nan("grasp_success") >= 0.5),
+            "contact_health_ratio": mean_or_nan("contact_health_ratio"),
+            "final_contact_health_ratio": last_or_nan("contact_health_ratio"),
+            "soft_connect_active_ratio": mean_or_nan("soft_connect_active"),
+            "contact_force_mean_n": mean_or_nan("contact_force_n"),
+            "contact_force_peak_n": max_or_nan("contact_force_n"),
+            "final_valve_vel_deg_s": last_or_nan("valve_vel_deg_s"),
+            "angle_brake_peak_torque": max_or_nan("angle_brake_torque", abs_value=True),
+            "max_tilt_deg": max_or_nan("base_tilt_deg"),
+            "base_approach_m": max_or_nan("base_approach_m"),
+            "base_yaw_drift_deg": max_or_nan("base_yaw_drift_deg"),
+            "completion_quality_reason": _csv_token(self._turn_hold_quality_reason),
+            "result": result,
+            "failure_reason": _csv_token(failure_reason or self._failure_reason),
+        }
+        self._turn_segment_summaries.append(segment_summary)
+        self._write_summary_record(segment_summary)
         self.logger.info(
             colored(
                 f"[VALVE_GRASP] contact turn summary target={self.turn_target_deg:+.1f}deg "
-                f"actual_final={actual_delta[-1]:+.1f}deg "
-                f"final_error={final_error[-1]:+.2f}deg "
-                f"traj_mae={np.mean(np.abs(angle_error)):.2f}deg "
-                f"ee_mean={np.mean(ee_error):.4f}m "
-                f"slip_p90={np.nanpercentile(relative_slip, 90):.4f}m",
+                f"actual_final={segment_summary['actual_delta_deg']:+.1f}deg "
+                f"final_error={segment_summary['final_error_deg']:+.2f}deg "
+                f"traj_mae={segment_summary['trajectory_mae_deg']:.2f}deg "
+                f"ee_mean={segment_summary['eef_mean_error_m']:.4f}m "
+                f"slip_p90={segment_summary['slip_p90_m']:.4f}m "
+                f"final_slip={segment_summary['final_relative_slip_m']:.4f}m "
+                f"contact_health={segment_summary['contact_health_ratio']:.2f} "
+                f"final_grasp={int(segment_summary['final_grasp_success'])} "
+                f"soft_ratio={segment_summary['soft_connect_active_ratio']:.2f} "
+                f"force_peak={segment_summary['contact_force_peak_n']:.1f}N "
+                f"brake_peak={segment_summary['angle_brake_peak_torque']:.2f}",
                 "cyan",
             )
         )
         self._turn_rows = []
+
+    def _write_overall_summary(self, overall_result="done"):
+        if self._overall_summary_written:
+            return
+        if not self._turn_segment_summaries:
+            return
+        self._overall_summary_written = True
+        sequence_target = (
+            float(sum(self.turn_target_sequence_deg))
+            if self.turn_target_sequence_deg
+            else float(self.turn_target_deg)
+        )
+        sequence_actual = float(sum(row.get("actual_delta_deg", 0.0) for row in self._turn_segment_summaries))
+        sequence_error = float(sequence_target - sequence_actual)
+        worst = max(
+            self._turn_segment_summaries,
+            key=lambda row: abs(float(row.get("final_error_deg", 0.0))),
+        )
+        summary = {
+            "type": "overall",
+            "trial_id": os.path.splitext(os.path.basename(self.log_file))[0],
+            "sequence_target_deg": sequence_target,
+            "sequence_actual_deg": sequence_actual,
+            "sequence_final_error_deg": sequence_error,
+            "total_duration_s": (
+                0.0 if self._test_start_t is None else float(time.perf_counter() - self._test_start_t)
+            ),
+            "overall_result": overall_result,
+            "worst_segment_id": int(worst.get("segment_id", -1)),
+            "max_contact_force_n": max(
+                float(row.get("contact_force_peak_n", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "max_relative_slip_m": max(
+                float(row.get("slip_p90_m", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "max_final_relative_slip_m": max(
+                float(row.get("final_relative_slip_m", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "min_grasp_success_ratio": min(
+                float(row.get("grasp_success_ratio", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "min_final_contact_health_ratio": min(
+                float(row.get("final_contact_health_ratio", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "max_base_tilt_deg": max(float(row.get("max_tilt_deg", 0.0)) for row in self._turn_segment_summaries),
+            "max_base_approach_m": max(
+                float(row.get("base_approach_m", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "max_base_yaw_drift_deg": max(
+                float(row.get("base_yaw_drift_deg", 0.0)) for row in self._turn_segment_summaries
+            ),
+            "failure_reason": _csv_token(self._failure_reason),
+        }
+        self._write_summary_record(summary)
+        self.logger.info(
+            colored(
+                f"[VALVE_GRASP] sequence summary target={sequence_target:+.1f}deg "
+                f"actual={sequence_actual:+.1f}deg error={sequence_error:+.2f}deg "
+                f"result={overall_result} worst_segment={summary['worst_segment_id']}",
+                "cyan",
+            )
+        )
 
     def _turn_point_base_for_delta(self, geom, delta_deg):
         if (
@@ -1608,6 +1938,28 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             if "right_hand_middle" in pair or "right_grasp_proxy_middle" in pair:
                 groups["middle"] = True
         return groups
+
+    def _contact_group_counts(self, geom, real_only=True):
+        counts = {"palm": 0, "thumb": 0, "index": 0, "middle": 0}
+        pair_key = "real_contact_pairs" if real_only else "contact_pairs"
+        for pair in geom.get(pair_key, []) if geom else []:
+            pair = str(pair)
+            if "right_rubber_hand" in pair or "right_hand_palm" in pair or "right_grasp_proxy_palm" in pair:
+                counts["palm"] += 1
+            if "right_hand_thumb" in pair or "right_grasp_proxy_thumb" in pair:
+                counts["thumb"] += 1
+            if "right_hand_index" in pair or "right_grasp_proxy_index" in pair:
+                counts["index"] += 1
+            if "right_hand_middle" in pair or "right_grasp_proxy_middle" in pair:
+                counts["middle"] += 1
+        return counts
+
+    def _contact_health(self, geom):
+        # 第一轮只做可观测性：健康度按真实掌心/三指是否都有接触来打分。
+        counts = self._contact_group_counts(geom, real_only=True)
+        score = sum(1 for key in ("palm", "thumb", "index", "middle") if counts[key] > 0)
+        ratio = score / 4.0
+        return counts, float(score), float(ratio)
 
     def _grasp_success(self, geom):
         groups = self._contact_groups(geom, real_only=self.success_require_real_hand_contact)
@@ -1792,6 +2144,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                                 "yellow",
                             )
                         )
+                        self._set_failure_reason("close_stage_timeout")
                         self._enter_state(self.FAILED)
                         return
                     self.logger.warning(
@@ -1847,6 +2200,9 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                             "yellow",
                         )
                     )
+                    self._set_failure_reason(
+                        "turn_entry_failed:" + self._format_turn_entry_status(status)
+                    )
                     self._enter_state(self.FAILED)
                 else:
                     self._enter_state(self.DONE)
@@ -1865,6 +2221,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 abort_reason = self._turn_abort_reason(geom, robot_state_data)
                 if abort_reason is not None:
                     self.logger.warning(colored(f"[VALVE_GRASP] pre-turn aborted: {abort_reason}", "yellow"))
+                    self._set_failure_reason(abort_reason, abort=True)
                     self._set_contact_assist(False)
                     self._enter_state(self.FAILED)
                     return
@@ -1881,6 +2238,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             abort_reason = self._turn_abort_reason(geom, robot_state_data)
             if abort_reason is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] pre-turn aborted: {abort_reason}", "yellow"))
+                self._set_failure_reason(abort_reason, abort=True)
                 self._set_contact_assist(False)
                 self._enter_state(self.FAILED)
                 return
@@ -1898,6 +2256,9 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                             "yellow",
                         )
                     )
+                    self._set_failure_reason(
+                        "pre_turn_settle_rejected:" + self._format_turn_entry_status(status)
+                    )
                     self._enter_state(self.FAILED)
                 return
             if settle_elapsed >= self.turn_pre_settle_max_s:
@@ -1907,6 +2268,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                         "yellow",
                     )
                 )
+                self._set_failure_reason("pre_turn_settle_timeout")
                 self._enter_state(self.FAILED)
             return
 
@@ -1914,6 +2276,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             abort_reason = self._turn_abort_reason(geom, robot_state_data)
             if abort_reason is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] turn aborted: {abort_reason}", "yellow"))
+                self._set_failure_reason(abort_reason, abort=True)
                 self._set_contact_assist(False)
                 self._enter_state(self.FAILED)
                 return
@@ -1924,11 +2287,19 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             abort_reason = self._turn_abort_reason(geom, robot_state_data)
             if abort_reason is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] turn hold aborted: {abort_reason}", "yellow"))
+                self._set_failure_reason(abort_reason, abort=True)
                 self._set_contact_assist(False)
                 self._enter_state(self.FAILED)
                 return
             self._hold_turn_command_target(geom, robot_state_data=robot_state_data)
-            if time.perf_counter() - self._state_enter_t >= self.turn_hold_s:
+            ready, quality_failure = self._turn_hold_ready_for_next_segment(geom, robot_state_data)
+            if quality_failure is not None:
+                self.logger.warning(colored(f"[VALVE_GRASP] turn hold quality failed: {quality_failure}", "yellow"))
+                self._set_failure_reason(quality_failure, abort=True)
+                self._set_contact_assist(False)
+                self._enter_state(self.FAILED)
+                return
+            if ready:
                 self._summarize_turn()
                 if self._start_next_turn_sequence_segment(geom, robot_state_data):
                     return
@@ -2034,11 +2405,6 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             turn_final_error = self.turn_target_deg
             turn_motion_radius = np.nan
 
-        if self.task_state in (self.TURN_VALVE, self.TURN_HOLD) and self._turn_started:
-            self._turn_rows.append(
-                [turn_angle_error, turn_final_error, error, relative_slip, turn_actual_delta]
-            )
-
         base_roll, base_pitch, base_yaw = _base_rpy_deg(geom)
         if "base_pos_world" in geom and "center_world" in geom:
             base_to_valve = np.asarray(geom["center_world"], dtype=float) - np.asarray(
@@ -2049,11 +2415,79 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         left_foot_force = float(geom.get("left_foot_force", 0.0))
         right_foot_force = float(geom.get("right_foot_force", 0.0))
         feet_contact_stable = bool(geom.get("feet_contact_stable", False))
+        base_tilt_deg = float(max(abs(base_roll), abs(base_pitch)))
+        if self._turn_start_base_to_valve_x_m is not None and np.isfinite(base_to_valve[0]):
+            base_approach_m = float(self._turn_start_base_to_valve_x_m - base_to_valve[0])
+        else:
+            base_approach_m = np.nan
+        if self._turn_start_base_yaw_deg is not None and np.isfinite(base_yaw):
+            base_yaw_drift_deg = abs(_angle_diff_deg(base_yaw, self._turn_start_base_yaw_deg))
+        else:
+            base_yaw_drift_deg = np.nan
         action_norm = float(np.linalg.norm(getattr(self, "last_policy_action", np.zeros(1))))
         right_hand_q = np.asarray(geom.get("right_hand_q", [np.nan] * 7), dtype=float)
         right_hand_target_q = np.asarray(geom.get("right_hand_target_q", [np.nan] * 7), dtype=float)
         right_hand_torque = np.asarray(geom.get("right_hand_torque_cmd", [np.nan] * 7), dtype=float)
         right_hand_state = str(geom.get("right_hand_state", "unknown")).replace(",", ";")
+        contact_group_counts, contact_health_score, contact_health_ratio = self._contact_health(geom)
+        soft_connect_active = bool(self._contact_assist_active or attach_enabled)
+        angle_brake_enabled = bool(
+            self.turn_hold_angle_brake_enabled
+            and valve_hold_enabled
+            and self.task_state in (self.TURN_HOLD, self.DONE, self.FAILED)
+        )
+        angle_brake_torque = float(valve_hold_tau if angle_brake_enabled else 0.0)
+        if self._turn_started:
+            valve_angle_deg = float(np.rad2deg(valve_angle))
+            valve_target_angle_deg = float(np.rad2deg(self._turn_start_angle) + turn_reference_delta)
+            valve_angle_error_deg = float(turn_angle_error)
+        else:
+            valve_angle_deg = float(np.rad2deg(valve_angle))
+            valve_target_angle_deg = np.nan
+            valve_angle_error_deg = np.nan
+        valve_vel_deg_s = float(np.rad2deg(valve_vel))
+
+        current_turn_metric = {
+            "turn_angle_error_deg": float(turn_angle_error),
+            "turn_final_error_deg": float(turn_final_error),
+            "right_eef_pos_error_m": float(error),
+            "relative_slip_m": float(relative_slip),
+            "turn_actual_delta_deg": float(turn_actual_delta),
+            "grasp_success": 1.0 if success else 0.0,
+            "contact_health_ratio": float(contact_health_ratio),
+            "soft_connect_active": 1.0 if soft_connect_active else 0.0,
+            "contact_force_n": float(geom.get("real_contact_normal_force", normal_force)),
+            "valve_vel_deg_s": float(valve_vel_deg_s),
+            "angle_brake_torque": float(angle_brake_torque),
+            "base_tilt_deg": float(base_tilt_deg),
+            "base_approach_m": float(base_approach_m),
+            "base_yaw_drift_deg": float(base_yaw_drift_deg),
+        }
+        segment_rows_for_running_stats = list(self._turn_rows)
+        if self.task_state in (self.TURN_VALVE, self.TURN_HOLD) and self._turn_started:
+            segment_rows_for_running_stats.append(current_turn_metric)
+        if segment_rows_for_running_stats:
+            soft_connect_active_ratio = float(
+                np.mean([row["soft_connect_active"] for row in segment_rows_for_running_stats])
+            )
+            contact_force_peak_n = float(
+                np.nanmax([row["contact_force_n"] for row in segment_rows_for_running_stats])
+            )
+            angle_brake_peak_torque = float(
+                np.nanmax(np.abs([row["angle_brake_torque"] for row in segment_rows_for_running_stats]))
+            )
+            max_base_tilt_deg = float(
+                np.nanmax([row["base_tilt_deg"] for row in segment_rows_for_running_stats])
+            )
+        else:
+            soft_connect_active_ratio = 1.0 if soft_connect_active else 0.0
+            contact_force_peak_n = float(geom.get("real_contact_normal_force", normal_force))
+            angle_brake_peak_torque = abs(angle_brake_torque)
+            max_base_tilt_deg = base_tilt_deg
+        if self.task_state in (self.TURN_VALVE, self.TURN_HOLD) and self._turn_started:
+            self._turn_rows.append(current_turn_metric)
+
+        segment_result = "failed" if self.task_state == self.FAILED else ("done" if self.task_state == self.DONE else "running")
         contact_pairs = "|".join(
             str(pair).replace(",", ";") for pair in geom.get("contact_pairs", [])
         )
@@ -2099,7 +2533,24 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"{float(geom.get('right_hand_close_progress_finger', np.nan)):.6f},"
                 f"{float(geom.get('right_hand_target_close_progress_thumb', np.nan)):.6f},"
                 f"{float(geom.get('right_hand_target_close_progress_finger', np.nan)):.6f},"
-                f"{contact_pairs},{real_contact_pairs},{debug_contact_pairs}\n"
+                f"{contact_pairs},{real_contact_pairs},{debug_contact_pairs},"
+                f"{self.task_state},{self._turn_sequence_index + 1},"
+                f"{max(1, len(self.turn_target_sequence_deg))},"
+                f"{self.turn_target_deg:.6f},{self._turn_sequence_cumulative_target_deg():.6f},"
+                f"{valve_angle_deg:.6f},{valve_target_angle_deg:.6f},{valve_angle_error_deg:.6f},"
+                f"{valve_vel_deg_s:.6f},{error:.6f},unavailable,"
+                f"{int(geom.get('real_contact_count', contact_count))},"
+                f"{contact_group_counts['thumb']},{contact_group_counts['index']},"
+                f"{contact_group_counts['middle']},{contact_health_score:.6f},"
+                f"{contact_health_ratio:.6f},{int(soft_connect_active)},"
+                f"{soft_connect_active_ratio:.6f},"
+                f"{float(geom.get('real_contact_normal_force', normal_force)):.6f},"
+                f"{contact_force_peak_n:.6f},{int(angle_brake_enabled)},"
+                f"{angle_brake_torque:.6f},{angle_brake_peak_torque:.6f},"
+                f"{base_approach_m:.6f},{base_yaw_drift_deg:.6f},"
+                f"{base_tilt_deg:.6f},{max_base_tilt_deg:.6f},"
+                f"{segment_result},{_csv_token(self._failure_reason)},"
+                f"{_csv_token(self._abort_reason)}\n"
             )
         self._write_grasp_marker_file(
             self._current_target_base,
