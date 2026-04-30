@@ -69,6 +69,44 @@
               conaffinity="1"
               friction="2.0 0.03 0.003"/>
 
+        <!-- Visual-only color stickers for sim RGB-D debug. They are thin,
+             massless, non-contact geoms placed on the same front plane. -->
+        <geom name="vision_center_cyan_marker"
+              type="cylinder"
+              size="0.020 0.0015"
+              pos="0.031 0.0000 0.0000"
+              euler="0 1.57079632679 0"
+              rgba="0.00 1.00 1.00 1"
+              density="0"
+              contype="0"
+              conaffinity="0"/>
+        <geom name="vision_spoke_magenta_marker"
+              type="box"
+              size="0.0015 0.043 0.011"
+              pos="0.031 0.0950 0.0000"
+              rgba="1.00 0.00 1.00 1"
+              density="0"
+              contype="0"
+              conaffinity="0"/>
+        <geom name="vision_grasp_green_marker"
+              type="cylinder"
+              size="0.019 0.0015"
+              pos="0.031 0.1386 -0.0800"
+              euler="0 1.57079632679 0"
+              rgba="0.00 1.00 0.00 1"
+              density="0"
+              contype="0"
+              conaffinity="0"/>
+        <geom name="vision_plane_aux_blue_marker"
+              type="box"
+              size="0.0015 0.043 0.011"
+              pos="0.031 0.0294 0.0904"
+              euler="1.2558 0 0"
+              rgba="0.45 0.00 1.00 1"
+              density="0"
+              contype="0"
+              conaffinity="0"/>
+
         <!-- 主轮缘：连续 capsule 近似圆环。管半径 26 mm，兼顾可抓性和三指夹爪包络空间。 -->
         <geom name="rim_00" type="capsule" size="0.026" fromto="0 0.1600 0.0000 0 0.1478 0.0612" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>
         <geom name="rim_01" type="capsule" size="0.026" fromto="0 0.1478 0.0612 0 0.1131 0.1131" rgba="0.75 0.10 0.10 1" contype="1" conaffinity="1" friction="4.0 0.12 0.02"/>

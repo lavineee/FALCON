@@ -9,6 +9,43 @@ valve_wheel_body_name: "valve_wheel"
 valve_attach_equality_name: "right_hand_valve_connect"
 right_contact_grasp_proxy_site_name: "right_contact_grasp_palm_inner_site"
 
+# Geometry provider source. The default preserves the current MuJoCo GT baseline.
+valve_geometry_source: "gt"
+vision_status_file: "/tmp/falcon_valve_vision_status.json"
+vision_timeout_s: 0.5
+vision_fallback_to_gt: true
+vision_override_control: false
+vision_override_angle: false
+vision_overlay_debug_file: "/tmp/falcon_valve_vision_overlay_debug.json"
+
+# Sim RGB-D color vision debug output. Disabled by default so the MuJoCo GT
+# baseline does not create renderers, files, or control-side changes.
+valve_vision_enable: false
+valve_vision_mode: "sim_depth_color_debug"
+valve_vision_camera_name: "head_camera"
+valve_vision_status_file: "/tmp/falcon_valve_vision_status.json"
+valve_vision_metrics_file: "/tmp/falcon_valve_vision_metrics.csv"
+valve_vision_debug_dir: "/tmp"
+valve_vision_hz: 10
+valve_vision_debug_image_hz: 2
+valve_vision_width: 640
+valve_vision_height: 480
+valve_vision_min_mask_area_px: 50
+valve_vision_min_points: 30
+valve_vision_min_aux_points: 50
+valve_vision_use_plane_aux: true
+valve_vision_max_plane_fit_error_m: 0.02
+valve_vision_depth_cluster_tolerance_m: 0.08
+# Color stickers are rendered on the front face; output geometry is the valve
+# center/grasp plane behind that visible surface.
+valve_vision_marker_axis_offset_m: 0.0325
+valve_vision_self_check_max_error_m: 0.08
+valve_vision_hsv_ranges:
+  center: [[80, 80, 80], [100, 255, 255]]    # cyan
+  spoke: [[140, 80, 80], [170, 255, 255]]    # magenta
+  grasp: [[45, 80, 80], [80, 255, 255]]      # green
+  plane_aux: [[126, 80, 50], [140, 255, 255]] # violet aux
+
 valve_attachment_mode: "none"
 # 阀门真实抓握阶段必须让可见手掌/手指 mesh 参与碰撞。
 # proxy pad 仍保留用于稳定统计和接触保持，但不能替代真实手指碰撞。

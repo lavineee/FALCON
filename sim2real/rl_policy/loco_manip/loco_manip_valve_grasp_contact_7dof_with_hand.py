@@ -75,6 +75,36 @@ def _csv_token(value):
     return str(value).replace(",", ";").replace("\n", " ").replace("\r", " ")
 
 
+def _array3_or_raise(value, name):
+    arr = np.asarray(value, dtype=float)
+    if arr.size != 3:
+        raise ValueError(f"{name} must contain 3 values")
+    arr = arr.reshape(3)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must be finite")
+    return arr
+
+
+def _rot3_or_raise(value, name):
+    arr = np.asarray(value, dtype=float)
+    if arr.size != 9:
+        raise ValueError(f"{name} must contain 9 values")
+    arr = arr.reshape(3, 3)
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} must be finite")
+    u, _, vh = np.linalg.svd(arr)
+    rot = u @ vh
+    if np.linalg.det(rot) < 0.0:
+        u[:, -1] *= -1.0
+        rot = u @ vh
+    return rot
+
+
+def _wrapped_angle_error_deg(angle, reference):
+    err = (float(angle) - float(reference) + np.pi) % (2.0 * np.pi) - np.pi
+    return float(np.rad2deg(err))
+
+
 class SimStatusGraspGeometryProvider:
     """从 MuJoCo status 读取抓握几何；后续实机可替换成视觉估计输出。"""
 
@@ -171,6 +201,264 @@ class SimStatusGraspGeometryProvider:
         }
 
 
+class VisionOverlayGraspGeometryProvider:
+    """Overlay valve geometry from a vision status JSON onto complete MuJoCo GT status."""
+
+    def __init__(
+        self,
+        gt_provider,
+        vision_status_file,
+        mode="vision_overlay_debug",
+        timeout_s=0.5,
+        fallback_to_gt=True,
+        override_control=False,
+        override_angle=False,
+        debug_file="/tmp/falcon_valve_vision_overlay_debug.json",
+    ):
+        self.gt_provider = gt_provider
+        self.vision_status_file = vision_status_file
+        self.mode = str(mode).strip().lower()
+        self.timeout_s = float(timeout_s)
+        self.fallback_to_gt = bool(fallback_to_gt)
+        self.override_control = bool(override_control)
+        self.override_angle = bool(override_angle)
+        self.debug_file = debug_file
+
+    def read(self):
+        gt_geom = self.gt_provider.read()
+        if gt_geom is None:
+            return None
+
+        vision, reason = self._read_vision_status()
+        use_control = False
+        overlay_geom = None
+        if vision is not None:
+            try:
+                overlay_geom = self._build_overlay_geom(gt_geom, vision)
+                use_control = self.mode == "vision_overlay" and self.override_control
+                debug = self._make_debug_payload(
+                    gt_geom,
+                    overlay_geom,
+                    vision,
+                    reason="ok",
+                    vision_valid=True,
+                    vision_used_for_control=use_control,
+                )
+                self._write_debug_payload(debug)
+                if use_control:
+                    return self._with_vision_metadata(overlay_geom, debug)
+                return self._with_vision_metadata(gt_geom, debug)
+            except Exception as exc:
+                reason = f"overlay_build_failed:{type(exc).__name__}:{exc}"
+
+        debug = self._make_debug_payload(
+            gt_geom,
+            overlay_geom,
+            vision,
+            reason=reason,
+            vision_valid=False,
+            vision_used_for_control=False,
+        )
+        self._write_debug_payload(debug)
+
+        if self.mode == "vision_overlay_debug":
+            return self._with_vision_metadata(gt_geom, debug)
+        if self.fallback_to_gt:
+            return self._with_vision_metadata(gt_geom, debug)
+        return None
+
+    def _read_vision_status(self):
+        if not self.vision_status_file:
+            return None, "missing_vision_status_file_config"
+        if not os.path.exists(self.vision_status_file):
+            return None, "vision_status_file_missing"
+        try:
+            with open(self.vision_status_file, "r") as file:
+                vision = json.load(file)
+        except Exception as exc:
+            return None, f"vision_json_parse_failed:{type(exc).__name__}:{exc}"
+
+        if not bool(vision.get("valid", False)):
+            return None, "vision_valid_false"
+
+        try:
+            timestamp = float(vision["timestamp"])
+        except Exception:
+            return None, "vision_timestamp_missing_or_invalid"
+        age_s = time.time() - timestamp
+        if self.timeout_s >= 0.0 and age_s > self.timeout_s:
+            return None, f"vision_stale:age_s={age_s:.3f}>timeout_s={self.timeout_s:.3f}"
+
+        frame = str(vision.get("frame", "base")).strip().lower()
+        if frame != "base":
+            return None, f"unsupported_vision_frame:{frame}"
+
+        try:
+            parsed = {
+                "timestamp": timestamp,
+                "frame": frame,
+                "center_base": _array3_or_raise(vision.get("center_base"), "center_base"),
+                "grasp_base": _array3_or_raise(vision.get("grasp_base"), "grasp_base"),
+                "axis_base": _array3_or_raise(vision.get("axis_base"), "axis_base"),
+                "quality": vision.get("quality", {}),
+            }
+            axis_norm = float(np.linalg.norm(parsed["axis_base"]))
+            if axis_norm < 1e-8:
+                raise ValueError("axis_base norm is too small")
+            parsed["axis_base"] = parsed["axis_base"] / axis_norm
+            if "wheel_pos_base" in vision:
+                parsed["wheel_pos_base"] = _array3_or_raise(vision["wheel_pos_base"], "wheel_pos_base")
+            if "wheel_R_base" in vision and vision["wheel_R_base"] is not None:
+                parsed["wheel_R_base"] = _rot3_or_raise(vision["wheel_R_base"], "wheel_R_base")
+            if "grasp_R_base" in vision and vision["grasp_R_base"] is not None:
+                parsed["grasp_R_base"] = _rot3_or_raise(vision["grasp_R_base"], "grasp_R_base")
+            if "grasp_base_is_effective" in vision:
+                parsed["grasp_base_is_effective"] = bool(vision["grasp_base_is_effective"])
+            parsed["angle_valid"] = bool(vision.get("angle_valid", False))
+            if parsed["angle_valid"]:
+                parsed["valve_angle"] = float(vision["valve_angle"])
+                parsed["valve_vel"] = float(vision.get("valve_vel", 0.0))
+                if not np.isfinite(parsed["valve_angle"]) or not np.isfinite(parsed["valve_vel"]):
+                    raise ValueError("valve_angle and valve_vel must be finite")
+        except Exception as exc:
+            return None, f"vision_validation_failed:{type(exc).__name__}:{exc}"
+
+        return parsed, "ok"
+
+    def _build_overlay_geom(self, gt_geom, vision):
+        overlay = dict(gt_geom)
+        world_to_base = np.asarray(gt_geom["world_to_base"], dtype=float).reshape(3, 3)
+        base_to_world = world_to_base.T
+        base_pos_world = np.asarray(gt_geom["base_pos_world"], dtype=float).reshape(3)
+
+        center_base = vision["center_base"]
+        grasp_base = vision["grasp_base"]
+        axis_base = vision["axis_base"]
+        wheel_pos_base = vision.get("wheel_pos_base", center_base)
+
+        center_world = base_pos_world + base_to_world @ center_base
+        grasp_world = base_pos_world + base_to_world @ grasp_base
+        axis_world = base_to_world @ axis_base
+        axis_world = axis_world / (np.linalg.norm(axis_world) + 1e-9)
+        wheel_pos_world = base_pos_world + base_to_world @ wheel_pos_base
+
+        overlay["center_base"] = center_base.copy()
+        overlay["grasp_base"] = grasp_base.copy()
+        overlay["axis_base"] = axis_base.copy()
+        overlay["center_world"] = center_world
+        overlay["grasp_world"] = grasp_world
+        overlay["axis_world"] = axis_world
+        overlay["wheel_pos_world"] = wheel_pos_world
+        if "wheel_R_base" in vision:
+            overlay["wheel_xmat_world"] = _rot3_or_raise(
+                base_to_world @ vision["wheel_R_base"],
+                "wheel_xmat_world",
+            )
+
+        if "grasp_R_base" in vision:
+            overlay["grasp_R_base"] = vision["grasp_R_base"].copy()
+        else:
+            overlay.pop("grasp_R_base", None)
+        if "grasp_base_is_effective" in vision:
+            overlay["grasp_base_is_effective"] = bool(vision["grasp_base_is_effective"])
+        else:
+            overlay.pop("grasp_base_is_effective", None)
+
+        angle_valid = bool(vision.get("angle_valid", False))
+        overlay["vision_angle_valid"] = angle_valid
+        if angle_valid:
+            overlay["vision_valve_angle"] = float(vision["valve_angle"])
+            overlay["vision_valve_vel"] = float(vision["valve_vel"])
+            if self.override_angle:
+                overlay["valve_angle"] = float(vision["valve_angle"])
+                overlay["valve_vel"] = float(vision["valve_vel"])
+        return overlay
+
+    def _make_debug_payload(
+        self,
+        gt_geom,
+        overlay_geom,
+        vision,
+        reason,
+        vision_valid,
+        vision_used_for_control,
+    ):
+        vision_angle_valid = bool(vision.get("angle_valid", False)) if vision else False
+        payload = {
+            "timestamp": time.time(),
+            "mode": self.mode,
+            "reason": reason,
+            "vision_status_file": self.vision_status_file,
+            "vision_valid": bool(vision_valid),
+            "vision_angle_valid": bool(vision_valid and vision_angle_valid),
+            "vision_override_angle": bool(self.override_angle),
+            "vision_valve_angle": None,
+            "vision_valve_vel": None,
+            "vision_used_for_control": bool(vision_used_for_control),
+            "vision_fallback_to_gt": bool(self.fallback_to_gt),
+            "center_error_m": None,
+            "grasp_error_m": None,
+            "axis_angle_error_deg": None,
+            "angle_error_deg": None,
+            "vision_timestamp": None,
+            "vision_age_s": None,
+        }
+        if vision:
+            payload["vision_timestamp"] = float(vision.get("timestamp", 0.0))
+            payload["vision_age_s"] = float(time.time() - payload["vision_timestamp"])
+            payload["quality"] = vision.get("quality", {})
+        if not vision_valid or overlay_geom is None:
+            return payload
+        if payload["vision_angle_valid"]:
+            payload["vision_valve_angle"] = float(vision["valve_angle"])
+            payload["vision_valve_vel"] = float(vision["valve_vel"])
+
+        center_error = np.asarray(overlay_geom["center_base"], dtype=float) - np.asarray(
+            gt_geom["center_base"], dtype=float
+        )
+        grasp_error = np.asarray(overlay_geom["grasp_base"], dtype=float) - np.asarray(
+            gt_geom["grasp_base"], dtype=float
+        )
+        axis_vis = _normalize_or_none(overlay_geom["axis_base"])
+        axis_gt = _normalize_or_none(gt_geom["axis_base"])
+        payload["center_error_m"] = float(np.linalg.norm(center_error))
+        payload["grasp_error_m"] = float(np.linalg.norm(grasp_error))
+        if axis_vis is not None and axis_gt is not None:
+            cos_angle = np.clip(abs(float(np.dot(axis_vis, axis_gt))), -1.0, 1.0)
+            payload["axis_angle_error_deg"] = float(np.rad2deg(np.arccos(cos_angle)))
+        if payload["vision_angle_valid"]:
+            payload["angle_error_deg"] = _wrapped_angle_error_deg(
+                vision["valve_angle"],
+                gt_geom.get("valve_angle", 0.0),
+            )
+        return payload
+
+    def _with_vision_metadata(self, geom, debug):
+        result = dict(geom)
+        result["vision_debug"] = debug
+        result["vision_valid"] = bool(debug.get("vision_valid", False))
+        result["vision_used_for_control"] = bool(debug.get("vision_used_for_control", False))
+        result["vision_angle_valid"] = bool(debug.get("vision_angle_valid", False))
+        if debug.get("vision_angle_valid", False):
+            result["vision_valve_angle"] = debug.get("vision_valve_angle", None)
+            result["vision_valve_vel"] = debug.get("vision_valve_vel", None)
+        return result
+
+    def _write_debug_payload(self, payload):
+        if not self.debug_file:
+            return
+        try:
+            debug_dir = os.path.dirname(self.debug_file)
+            if debug_dir:
+                os.makedirs(debug_dir, exist_ok=True)
+            tmp_file = f"{self.debug_file}.tmp"
+            with open(tmp_file, "w") as file:
+                json.dump(payload, file, ensure_ascii=True, allow_nan=False)
+            os.replace(tmp_file, self.debug_file)
+        except Exception:
+            return
+
+
 class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHandTestPolicy):
     """独立真实接触抓握 baseline，不复用旧 valve_task 状态机。"""
 
@@ -188,10 +476,52 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.geometry_provider = SimStatusGraspGeometryProvider(
-            self.sim_status_file,
-            timeout_s=self.status_timeout_s,
-        )
+        self.valve_geometry_source = str(self.config.get("valve_geometry_source", "gt")).strip().lower()
+        if self.valve_geometry_source == "gt":
+            self.geometry_provider = SimStatusGraspGeometryProvider(
+                self.sim_status_file,
+                timeout_s=self.status_timeout_s,
+            )
+        elif self.valve_geometry_source in ("vision_overlay_debug", "vision_overlay"):
+            gt_provider = SimStatusGraspGeometryProvider(
+                self.sim_status_file,
+                timeout_s=self.status_timeout_s,
+            )
+            self.geometry_provider = VisionOverlayGraspGeometryProvider(
+                gt_provider,
+                self.config.get("vision_status_file", "/tmp/falcon_valve_vision_status.json"),
+                mode=self.valve_geometry_source,
+                timeout_s=self.config.get("vision_timeout_s", 0.5),
+                fallback_to_gt=self.config.get("vision_fallback_to_gt", True),
+                override_control=self.config.get("vision_override_control", False),
+                override_angle=self.config.get("vision_override_angle", False),
+                debug_file=self.config.get(
+                    "vision_overlay_debug_file",
+                    "/tmp/falcon_valve_vision_overlay_debug.json",
+                ),
+            )
+            self.logger.info(
+                colored(
+                    "[VALVE_GRASP] geometry source="
+                    f"{self.valve_geometry_source}, "
+                    f"override_control={bool(self.config.get('vision_override_control', False))}, "
+                    f"override_angle={bool(self.config.get('vision_override_angle', False))}",
+                    "cyan",
+                )
+            )
+        else:
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported valve_geometry_source="
+                    f"{self.valve_geometry_source}, using gt",
+                    "yellow",
+                )
+            )
+            self.valve_geometry_source = "gt"
+            self.geometry_provider = SimStatusGraspGeometryProvider(
+                self.sim_status_file,
+                timeout_s=self.status_timeout_s,
+            )
         self.pregrasp_offset_m = float(self.config.get("valve_pregrasp_offset_m", 0.13))
         self.pregrasp_axis = str(self.config.get("valve_pregrasp_axis", "valve_axis")).lower()
         self.pregrasp_error_m = float(self.config.get("valve_pregrasp_error_m", 0.045))

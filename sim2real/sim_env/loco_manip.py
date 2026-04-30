@@ -2,6 +2,7 @@ import logging
 logging.getLogger("loop_rate_limiters").setLevel(logging.ERROR)
 import sys
 import argparse
+import csv
 import json
 import os
 import time
@@ -87,6 +88,41 @@ class LocoManipSimulator(BaseSimulator):
         self.ee_marker_radius = float(config.get("ee_marker_radius", 0.025))
         self.ee_marker_visual_mode = str(config.get("ee_marker_visual_mode", "full")).lower()
         self.viewer_camera = config.get("viewer_camera", None)
+        self.valve_vision_enable = bool(config.get("valve_vision_enable", False))
+        self.valve_vision_mode = str(config.get("valve_vision_mode", "sim_depth_color_debug"))
+        self.valve_vision_camera_name = str(config.get("valve_vision_camera_name", "head_camera"))
+        self.valve_vision_status_file = config.get(
+            "valve_vision_status_file",
+            config.get("vision_status_file", "/tmp/falcon_valve_vision_status.json"),
+        )
+        self.valve_vision_metrics_file = config.get(
+            "valve_vision_metrics_file",
+            "/tmp/falcon_valve_vision_metrics.csv",
+        )
+        self.valve_vision_debug_dir = config.get("valve_vision_debug_dir", "/tmp")
+        self.valve_vision_hz = float(config.get("valve_vision_hz", 10.0))
+        self.valve_vision_debug_image_hz = float(config.get("valve_vision_debug_image_hz", 2.0))
+        self.valve_vision_width = int(config.get("valve_vision_width", 640))
+        self.valve_vision_height = int(config.get("valve_vision_height", 480))
+        self._valve_vision_renderer = None
+        self._valve_vision_ready = False
+        self._valve_vision_renderer_failed = False
+        self._valve_vision_camera_id = -1
+        self._valve_vision_last_update_t = -1e9
+        self._valve_vision_last_step_t = None
+        self._valve_vision_last_debug_image_t = -1e9
+        self._valve_vision_state = {}
+        self._valve_vision_gt_angle0 = None
+        self._valve_vision_theta_vis0 = None
+        self._valve_vision_metrics_header_written = False
+        self._valve_vision_estimate_fn = None
+        self._valve_vision_atomic_write_json_fn = None
+        self._valve_vision_project_fn = None
+        self._valve_vision_backproject_pixel_fn = None
+        self._valve_vision_transform_points_fn = None
+        self._valve_vision_sample_depth_fn = None
+        self._valve_vision_intrinsics_fn = None
+        self._valve_vision_wrap_to_pi_fn = None
 
         self.valve_center_site_name = config.get("valve_center_site_name", "valve_center_site")
         self.valve_grasp_site_name = config.get("valve_grasp_site_name", "right_hand_valve_site")
@@ -322,6 +358,7 @@ class LocoManipSimulator(BaseSimulator):
             self.mj_model, mujoco.mjtObj.mjOBJ_EQUALITY, self.weld_name
         )
         print(f"[ATTACH] name={self.weld_name}, id={self.weld_id}")
+        self._init_valve_vision()
 
         # force initial OFF
         if self.weld_id != -1:
@@ -805,6 +842,515 @@ class LocoManipSimulator(BaseSimulator):
             "conaffinity": int(self.mj_model.geom_conaffinity[geom_id]),
         }
 
+    def _init_valve_vision(self):
+        if not self.valve_vision_enable:
+            return
+        if self.valve_vision_mode != "sim_depth_color_debug":
+            self.logger.warning(
+                f"Unsupported valve_vision_mode={self.valve_vision_mode}; vision output disabled."
+            )
+            return
+        try:
+            from sim2real.vision.valve_color_geometry import (
+                atomic_write_json,
+                backproject_pixel_to_point,
+                camera_intrinsics_from_fovy,
+                estimate_valve_geometry_from_rgbd,
+                project_points_to_image,
+                sample_depth_near,
+                transform_points,
+                wrap_to_pi,
+            )
+        except Exception as exc:
+            self.logger.warning(f"Failed to import valve color vision helpers: {exc}")
+            return
+
+        camera_id = mujoco.mj_name2id(
+            self.mj_model,
+            mujoco.mjtObj.mjOBJ_CAMERA,
+            self.valve_vision_camera_name,
+        )
+        if camera_id == -1:
+            self.logger.warning(
+                f"valve_vision_camera_name={self.valve_vision_camera_name} not found; vision output disabled."
+            )
+            return
+        self._valve_vision_camera_id = camera_id
+        self._valve_vision_estimate_fn = estimate_valve_geometry_from_rgbd
+        self._valve_vision_atomic_write_json_fn = atomic_write_json
+        self._valve_vision_project_fn = project_points_to_image
+        self._valve_vision_backproject_pixel_fn = backproject_pixel_to_point
+        self._valve_vision_transform_points_fn = transform_points
+        self._valve_vision_sample_depth_fn = sample_depth_near
+        self._valve_vision_intrinsics_fn = camera_intrinsics_from_fovy
+        self._valve_vision_wrap_to_pi_fn = wrap_to_pi
+        self._valve_vision_metrics_header_written = bool(
+            self.valve_vision_metrics_file and os.path.exists(self.valve_vision_metrics_file)
+        )
+        self._valve_vision_ready = True
+        print(
+            "[VALVE_VISION] sim_depth_color_debug enabled: "
+            f"camera={self.valve_vision_camera_name}, "
+            f"size={self.valve_vision_width}x{self.valve_vision_height}, "
+            f"hz={self.valve_vision_hz:.1f}"
+        )
+
+    def _ensure_valve_vision_renderer(self):
+        if self._valve_vision_renderer is not None:
+            return True
+        if self._valve_vision_renderer_failed:
+            return False
+        try:
+            self._valve_vision_renderer = mujoco.Renderer(
+                self.mj_model,
+                height=self.valve_vision_height,
+                width=self.valve_vision_width,
+            )
+            return True
+        except Exception as exc:
+            self._valve_vision_renderer_failed = True
+            self.logger.warning(f"Failed to create MuJoCo valve vision renderer: {exc}")
+            return False
+
+    def _valve_vision_hsv_defaults(self):
+        return {
+            "center": [[80, 80, 80], [100, 255, 255]],   # cyan
+            "spoke": [[140, 80, 80], [170, 255, 255]],   # magenta
+            "grasp": [[45, 80, 80], [80, 255, 255]],     # green
+            "plane_aux": [[110, 180, 180], [125, 255, 255]], # saturated blue
+        }
+
+    def _valve_vision_config(self):
+        return {
+            "hsv_ranges": self.config.get("valve_vision_hsv_ranges", self._valve_vision_hsv_defaults()),
+            "min_mask_area_px": int(self.config.get("valve_vision_min_mask_area_px", 50)),
+            "min_points": int(self.config.get("valve_vision_min_points", 30)),
+            "min_aux_points": int(self.config.get("valve_vision_min_aux_points", 50)),
+            "use_plane_aux": bool(self.config.get("valve_vision_use_plane_aux", True)),
+            "max_plane_fit_error_m": float(self.config.get("valve_vision_max_plane_fit_error_m", 0.02)),
+            "depth_min_m": float(self.config.get("valve_vision_depth_min_m", 0.02)),
+            "depth_max_m": float(self.config.get("valve_vision_depth_max_m", 5.0)),
+            "depth_cluster_tolerance_m": float(self.config.get("valve_vision_depth_cluster_tolerance_m", 0.08)),
+            "marker_axis_offset_m": float(self.config.get("valve_vision_marker_axis_offset_m", 0.0325)),
+            "max_points_per_mask": int(self.config.get("valve_vision_max_points_per_mask", 6000)),
+            "morph_open_iters": int(self.config.get("valve_vision_morph_open_iters", 1)),
+            "morph_close_iters": int(self.config.get("valve_vision_morph_close_iters", 1)),
+            "morph_kernel_px": int(self.config.get("valve_vision_morph_kernel_px", 3)),
+            "grasp_forward_axis_sign": float(self.config.get("valve_grasp_forward_axis_sign", -1.0)),
+            "grasp_radial_axis": str(self.config.get("valve_grasp_radial_axis", "y")),
+            "grasp_radial_axis_sign": float(self.config.get("valve_grasp_radial_axis_sign", -1.0)),
+        }
+
+    def _valve_vision_intrinsics(self):
+        fovy = float(self.mj_model.cam_fovy[self._valve_vision_camera_id])
+        if not np.isfinite(fovy) or fovy <= 0.0:
+            fovy = 45.0
+        return self._valve_vision_intrinsics_fn(self.valve_vision_width, self.valve_vision_height, fovy)
+
+    def _valve_vision_T_base_cam(self):
+        cam_pos_world = np.array(self.mj_data.cam_xpos[self._valve_vision_camera_id], dtype=float).reshape(3)
+        cam_R_world = np.array(self.mj_data.cam_xmat[self._valve_vision_camera_id], dtype=float).reshape(3, 3)
+        base_pos_world = np.array(self.mj_data.xpos[self.base_id], dtype=float).reshape(3)
+        base_R_world = np.array(self.mj_data.xmat[self.base_id], dtype=float).reshape(3, 3)
+        world_to_base = base_R_world.T
+        T_base_cam = np.eye(4, dtype=float)
+        T_base_cam[:3, :3] = world_to_base @ cam_R_world
+        T_base_cam[:3, 3] = world_to_base @ (cam_pos_world - base_pos_world)
+        return T_base_cam
+
+    def _render_valve_vision_rgbd(self):
+        renderer = self._valve_vision_renderer
+        renderer.disable_depth_rendering()
+        renderer.update_scene(self.mj_data, camera=self.valve_vision_camera_name)
+        rgb = renderer.render().copy()
+        renderer.enable_depth_rendering()
+        renderer.update_scene(self.mj_data, camera=self.valve_vision_camera_name)
+        depth = renderer.render().copy()
+        renderer.disable_depth_rendering()
+        return rgb, depth
+
+    def _valve_vision_gt_base_geometry(self):
+        base_pos_world = np.array(self.mj_data.xpos[self.base_id], dtype=float).reshape(3)
+        base_R_world = np.array(self.mj_data.xmat[self.base_id], dtype=float).reshape(3, 3)
+        world_to_base = base_R_world.T
+        center_world = self._site_world(self.valve_center_site_id)
+        grasp_world = self._site_world(self.valve_grasp_site_id)
+        if center_world is None or grasp_world is None:
+            return None
+        geom = {
+            "center_base": world_to_base @ (center_world - base_pos_world),
+            "grasp_base": world_to_base @ (grasp_world - base_pos_world),
+            "valve_angle": 0.0,
+        }
+        if self.valve_wheel_body_id != -1:
+            wheel_R_world = np.array(self.mj_data.xmat[self.valve_wheel_body_id], dtype=float).reshape(3, 3)
+            geom["axis_base"] = world_to_base @ wheel_R_world[:, 0]
+        if self.valve_qadr != -1:
+            geom["valve_angle"] = float(self.mj_data.qpos[self.valve_qadr])
+        return geom
+
+    def _valve_vision_self_check(self, depth, K, T_base_cam):
+        gt = self._valve_vision_gt_base_geometry()
+        check = {
+            "ok": False,
+            "max_error_m": None,
+            "threshold_m": float(self.config.get("valve_vision_self_check_max_error_m", 0.08)),
+            "points": {},
+            "marker_points": {},
+        }
+        if gt is None:
+            check["reason"] = "missing_gt_sites"
+            return check
+        core_errors = []
+        marker_errors = []
+
+        def check_points(names, points_base, output):
+            pixels, _, visible = self._valve_vision_project_fn(points_base, K, T_base_cam)
+            local_errors = []
+            for idx, name in enumerate(names):
+                item = {
+                    "pixel": pixels[idx].tolist(),
+                    "visible": bool(visible[idx]),
+                    "depth_m": None,
+                    "error_m": None,
+                }
+                if visible[idx]:
+                    sampled_depth = self._valve_vision_sample_depth_fn(
+                        depth,
+                        pixels[idx],
+                        radius=int(self.config.get("valve_vision_self_check_depth_radius_px", 4)),
+                    )
+                    if sampled_depth is not None:
+                        point_cam = self._valve_vision_backproject_pixel_fn(pixels[idx], sampled_depth, K)
+                        point_base = self._valve_vision_transform_points_fn(T_base_cam, point_cam.reshape(1, 3))[0]
+                        error = float(np.linalg.norm(point_base - points_base[idx]))
+                        item["depth_m"] = float(sampled_depth)
+                        item["reprojected_base"] = point_base.tolist()
+                        item["gt_base"] = points_base[idx].tolist()
+                        item["error_m"] = error
+                        local_errors.append(error)
+                output[name] = item
+            return local_errors
+
+        names = ("center", "grasp")
+        points_base = np.vstack([gt[f"{name}_base"] for name in names])
+        core_errors.extend(check_points(names, points_base, check["points"]))
+
+        marker_points = {}
+        marker_names = {
+            "center_marker": "vision_center_cyan_marker",
+            "spoke_marker": "vision_spoke_magenta_marker",
+            "grasp_marker": "vision_grasp_green_marker",
+            "plane_aux_marker": "vision_plane_aux_blue_marker",
+        }
+        base_pos_world = np.array(self.mj_data.xpos[self.base_id], dtype=float).reshape(3)
+        world_to_base = np.array(self.mj_data.xmat[self.base_id], dtype=float).reshape(3, 3).T
+        for key, geom_name in marker_names.items():
+            geom_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+            if geom_id != -1:
+                geom_world = np.array(self.mj_data.geom_xpos[geom_id], dtype=float).reshape(3)
+                marker_points[key] = world_to_base @ (geom_world - base_pos_world)
+        if marker_points:
+            marker_keys = tuple(marker_points.keys())
+            marker_base = np.vstack([marker_points[key] for key in marker_keys])
+            marker_errors.extend(check_points(marker_keys, marker_base, check["marker_points"]))
+
+        center_error = check["points"].get("center", {}).get("error_m", None)
+        if center_error is None:
+            check["reason"] = "missing_projected_depth"
+            return check
+        max_error = float(center_error)
+        check["max_error_m"] = max_error
+        check["max_core_error_m"] = float(max(core_errors)) if core_errors else max_error
+        check["max_marker_error_m"] = float(max(marker_errors)) if marker_errors else None
+        all_errors = core_errors + marker_errors
+        check["max_all_error_m"] = float(max(all_errors)) if all_errors else max_error
+        check["ok"] = bool(max_error <= check["threshold_m"])
+        if not check["ok"]:
+            check["reason"] = "self_check_error_too_large"
+        return check
+
+    def _valve_vision_debug_gt(self, status):
+        gt = self._valve_vision_gt_base_geometry()
+        if gt is None:
+            return None
+        debug = {
+            "grasp_latched": bool(status.get("grasp_latched", False)),
+        }
+        if status.get("pose_valid", status.get("valid", False)):
+            if "center_base" in status:
+                center = np.asarray(status.get("center_base", [np.nan, np.nan, np.nan]), dtype=float).reshape(3)
+                debug["center_error_m"] = float(np.linalg.norm(center - gt["center_base"]))
+            else:
+                debug["center_error_m"] = None
+            if "grasp_base" in status:
+                grasp = np.asarray(status.get("grasp_base", [np.nan, np.nan, np.nan]), dtype=float).reshape(3)
+                debug["grasp_error_m"] = float(np.linalg.norm(grasp - gt["grasp_base"]))
+            else:
+                debug["grasp_error_m"] = None
+            axis = np.asarray(status.get("axis_base", [np.nan, np.nan, np.nan]), dtype=float).reshape(3)
+            gt_axis = np.asarray(gt.get("axis_base", [np.nan, np.nan, np.nan]), dtype=float).reshape(3)
+            axis_norm = float(np.linalg.norm(axis))
+            gt_axis_norm = float(np.linalg.norm(gt_axis))
+            if axis_norm > 1e-9 and gt_axis_norm > 1e-9:
+                dot = abs(float(np.dot(axis / axis_norm, gt_axis / gt_axis_norm)))
+                dot = max(-1.0, min(1.0, dot))
+                debug["axis_angle_error_deg"] = float(np.degrees(np.arccos(dot)))
+            else:
+                debug["axis_angle_error_deg"] = None
+            if status.get("angle_valid", False):
+                theta_vis = float(status.get("valve_angle", 0.0))
+                theta_vis_raw = status.get("quality", {}).get("theta_vis_raw", theta_vis)
+                if self._valve_vision_theta_vis0 is None:
+                    self._valve_vision_theta_vis0 = float(theta_vis_raw if theta_vis_raw is not None else theta_vis)
+                    self._valve_vision_gt_angle0 = float(gt["valve_angle"])
+                if theta_vis_raw is not None:
+                    theta_vis_delta = self._valve_vision_wrap_to_pi_fn(float(theta_vis_raw) - self._valve_vision_theta_vis0)
+                else:
+                    theta_vis_delta = self._valve_vision_wrap_to_pi_fn(theta_vis)
+                theta_gt_delta = self._valve_vision_wrap_to_pi_fn(float(gt["valve_angle"]) - self._valve_vision_gt_angle0)
+                angle_error = self._valve_vision_wrap_to_pi_fn(theta_vis_delta - theta_gt_delta)
+                debug["theta_vis_delta"] = float(theta_vis_delta)
+                debug["theta_gt_delta"] = float(theta_gt_delta)
+                debug["angle_error_deg"] = float(np.degrees(angle_error))
+            else:
+                debug["theta_vis_delta"] = None
+                debug["theta_gt_delta"] = None
+                debug["angle_error_deg"] = None
+        else:
+            debug["center_error_m"] = None
+            debug["grasp_error_m"] = None
+            debug["axis_angle_error_deg"] = None
+            debug["theta_vis_delta"] = None
+            debug["theta_gt_delta"] = None
+            debug["angle_error_deg"] = None
+        return debug
+
+    def _invalid_valve_vision_status(self, reason, self_check=None):
+        quality = {}
+        if self_check is not None:
+            quality["self_check"] = self_check
+        return {
+            "valid": False,
+            "pose_valid": False,
+            "grasp_valid": False,
+            "grasp_latched": False,
+            "plane_aux_valid": False,
+            "timestamp": time.time(),
+            "frame": "base",
+            "source": "sim_depth_color",
+            "reason": reason,
+            "angle_valid": False,
+            "quality": quality,
+        }
+
+    def _append_valve_vision_metrics(self, status):
+        if not self.valve_vision_metrics_file:
+            return
+        metrics_dir = os.path.dirname(self.valve_vision_metrics_file)
+        if metrics_dir:
+            os.makedirs(metrics_dir, exist_ok=True)
+        debug_gt = status.get("debug_gt", {}) or {}
+        quality = status.get("quality", {}) or {}
+        self_check = quality.get("self_check", {}) or {}
+        row = {
+            "wall_time": float(status.get("timestamp", time.time())),
+            "sim_time": float(self.t),
+            "valid": bool(status.get("valid", False)),
+            "pose_valid": bool(status.get("pose_valid", False)),
+            "grasp_valid": bool(status.get("grasp_valid", False)),
+            "grasp_latched": bool(status.get("grasp_latched", False)),
+            "plane_aux_valid": bool(status.get("plane_aux_valid", False)),
+            "reason": status.get("reason", ""),
+            "center_error_m": debug_gt.get("center_error_m", None),
+            "grasp_error_m": debug_gt.get("grasp_error_m", None),
+            "axis_angle_error_deg": debug_gt.get("axis_angle_error_deg", None),
+            "angle_error_deg": debug_gt.get("angle_error_deg", None),
+            "angle_valid": bool(status.get("angle_valid", False)),
+            "center_num_points": quality.get("center_num_points", None),
+            "spoke_num_points": quality.get("spoke_num_points", None),
+            "grasp_num_points": quality.get("grasp_num_points", None),
+            "plane_aux_num_points": quality.get("plane_aux_num_points", None),
+            "mask_area_center_px": quality.get("mask_area_center_px", None),
+            "mask_area_spoke_px": quality.get("mask_area_spoke_px", None),
+            "mask_area_grasp_px": quality.get("mask_area_grasp_px", None),
+            "mask_area_plane_aux_px": quality.get("mask_area_plane_aux_px", None),
+            "plane_fit_error_m": quality.get("plane_fit_error_m", None),
+            "self_check_ok": self_check.get("ok", None),
+            "self_check_max_error_m": self_check.get("max_error_m", None),
+            "self_check_max_core_error_m": self_check.get("max_core_error_m", None),
+            "self_check_max_marker_error_m": self_check.get("max_marker_error_m", None),
+            "self_check_max_all_error_m": self_check.get("max_all_error_m", None),
+            "self_check_center_error_m": (
+                self_check.get("points", {}).get("center", {}).get("error_m", None)
+            ),
+            "self_check_grasp_error_m": (
+                self_check.get("points", {}).get("grasp", {}).get("error_m", None)
+            ),
+            "self_check_center_marker_error_m": (
+                self_check.get("marker_points", {}).get("center_marker", {}).get("error_m", None)
+            ),
+            "self_check_spoke_marker_error_m": (
+                self_check.get("marker_points", {}).get("spoke_marker", {}).get("error_m", None)
+            ),
+            "self_check_grasp_marker_error_m": (
+                self_check.get("marker_points", {}).get("grasp_marker", {}).get("error_m", None)
+            ),
+            "plane_aux_self_check_error_m": (
+                self_check.get("marker_points", {}).get("plane_aux_marker", {}).get("error_m", None)
+            ),
+        }
+        fieldnames = list(row.keys())
+        write_header = not self._valve_vision_metrics_header_written or not os.path.exists(
+            self.valve_vision_metrics_file
+        )
+        with open(self.valve_vision_metrics_file, "a", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+                self._valve_vision_metrics_header_written = True
+            writer.writerow(row)
+
+    def _write_valve_vision_debug_images(self, rgb, depth, debug, status, self_check, K, T_base_cam):
+        if self.valve_vision_debug_image_hz <= 0.0:
+            return
+        interval = 1.0 / self.valve_vision_debug_image_hz
+        if self.t - self._valve_vision_last_debug_image_t < interval:
+            return
+        self._valve_vision_last_debug_image_t = self.t
+        try:
+            import cv2
+        except Exception as exc:
+            self.logger.warning(f"Failed to import cv2 for valve vision debug images: {exc}")
+            return
+        os.makedirs(self.valve_vision_debug_dir, exist_ok=True)
+        overlay = cv2.cvtColor(np.asarray(rgb, dtype=np.uint8), cv2.COLOR_RGB2BGR)
+        mask_img = np.zeros_like(overlay)
+        colors = {
+            "center": (255, 255, 0),
+            "spoke": (255, 0, 255),
+            "grasp": (0, 255, 0),
+            "plane_aux": (255, 0, 0),
+        }
+        masks = (debug or {}).get("masks", {}) if debug is not None else {}
+        for name, mask in masks.items():
+            mask = np.asarray(mask, dtype=np.uint8)
+            color = colors.get(name, (255, 255, 255))
+            mask_img[mask > 0] = color
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(overlay, contours, -1, color, 2)
+        if status.get("pose_valid", status.get("valid", False)):
+            points = []
+            labels = []
+            grasp_label = "G*" if status.get("grasp_latched", False) else "G"
+            for key, label in (("center_base", "C"), ("grasp_base", grasp_label), ("plane_aux_base", "A")):
+                if key in status:
+                    points.append(status[key])
+                    labels.append(label)
+            if points:
+                pixels, _, visible = self._valve_vision_project_fn(np.asarray(points, dtype=float), K, T_base_cam)
+                for pixel, is_visible, label in zip(pixels, visible, labels):
+                    if not is_visible or not np.all(np.isfinite(pixel)):
+                        continue
+                    u, v = int(round(pixel[0])), int(round(pixel[1]))
+                    cv2.circle(overlay, (u, v), 5, (255, 255, 255), -1)
+                    cv2.putText(overlay, label, (u + 6, v - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            arrow_specs = []
+            if "center_base" in status and "spoke_dir_base" in status:
+                center = np.asarray(status["center_base"], dtype=float)
+                spoke = np.asarray(status["spoke_dir_base"], dtype=float)
+                arrow_specs.append((center, center + 0.08 * spoke, "S", (255, 255, 255)))
+            if "center_base" in status and "axis_base" in status:
+                center = np.asarray(status["center_base"], dtype=float)
+                axis = np.asarray(status["axis_base"], dtype=float)
+                arrow_specs.append((center, center + 0.06 * axis, "X", (255, 255, 255)))
+            for start, end, label, color in arrow_specs:
+                pixels, _, visible = self._valve_vision_project_fn(np.vstack((start, end)), K, T_base_cam)
+                if not bool(visible[0]) or not bool(visible[1]) or not np.all(np.isfinite(pixels)):
+                    continue
+                p0 = (int(round(pixels[0, 0])), int(round(pixels[0, 1])))
+                p1 = (int(round(pixels[1, 0])), int(round(pixels[1, 1])))
+                cv2.arrowedLine(overlay, p0, p1, color, 2, tipLength=0.25)
+                cv2.putText(overlay, label, (p1[0] + 6, p1[1] - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+        for name, item in (self_check or {}).get("points", {}).items():
+            pixel = item.get("pixel", None)
+            if pixel is None:
+                continue
+            u, v = int(round(pixel[0])), int(round(pixel[1]))
+            cv2.drawMarker(overlay, (u, v), (240, 240, 240), markerType=cv2.MARKER_CROSS, markerSize=12)
+            cv2.putText(overlay, f"GT {name}", (u + 5, v + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (240, 240, 240), 1)
+        depth_arr = np.asarray(depth, dtype=float)
+        valid_depth = depth_arr[np.isfinite(depth_arr) & (depth_arr > 0.0)]
+        if valid_depth.size > 0:
+            d_min = float(np.percentile(valid_depth, 2.0))
+            d_max = float(np.percentile(valid_depth, 98.0))
+            denom = max(1e-6, d_max - d_min)
+            depth_norm = np.clip((depth_arr - d_min) / denom, 0.0, 1.0)
+            depth_u8 = (255.0 * (1.0 - depth_norm)).astype(np.uint8)
+            depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_VIRIDIS)
+        else:
+            depth_color = np.zeros_like(overlay)
+        cv2.imwrite(os.path.join(self.valve_vision_debug_dir, "falcon_valve_rgb_overlay.png"), overlay)
+        cv2.imwrite(os.path.join(self.valve_vision_debug_dir, "falcon_valve_color_masks.png"), mask_img)
+        cv2.imwrite(os.path.join(self.valve_vision_debug_dir, "falcon_valve_depth_debug.png"), depth_color)
+
+    def _maybe_update_valve_vision(self):
+        if not self.valve_vision_enable or not self._valve_vision_ready:
+            return
+        if not self._ensure_valve_vision_renderer():
+            return
+        if self._valve_vision_last_step_t is not None and abs(self.t - self._valve_vision_last_step_t) < 1e-12:
+            return
+        self._valve_vision_last_step_t = float(self.t)
+        if self.valve_vision_hz <= 0.0:
+            return
+        if self.t - self._valve_vision_last_update_t < 1.0 / self.valve_vision_hz:
+            return
+        self._valve_vision_last_update_t = float(self.t)
+
+        status = None
+        debug = None
+        self_check = None
+        try:
+            rgb, depth = self._render_valve_vision_rgbd()
+            K = self._valve_vision_intrinsics()
+            T_base_cam = self._valve_vision_T_base_cam()
+            self_check = self._valve_vision_self_check(depth, K, T_base_cam)
+            if not self_check.get("ok", False):
+                status = self._invalid_valve_vision_status("camera_geometry_self_check_failed", self_check)
+            else:
+                result = self._valve_vision_estimate_fn(
+                    rgb,
+                    depth,
+                    K,
+                    T_base_cam,
+                    self._valve_vision_config(),
+                    prev_state=self._valve_vision_state,
+                )
+                status = result["status"]
+                self._valve_vision_state = result.get("state", self._valve_vision_state)
+                debug = result.get("debug", None)
+                status.setdefault("quality", {})
+                status["quality"]["self_check"] = self_check
+                status["camera_name"] = self.valve_vision_camera_name
+                status["image_width"] = self.valve_vision_width
+                status["image_height"] = self.valve_vision_height
+            debug_gt = self._valve_vision_debug_gt(status)
+            if debug_gt is not None:
+                status["debug_gt"] = debug_gt
+            self._valve_vision_atomic_write_json_fn(self.valve_vision_status_file, status)
+            self._append_valve_vision_metrics(status)
+            self._write_valve_vision_debug_images(rgb, depth, debug, status, self_check, K, T_base_cam)
+        except Exception as exc:
+            self.logger.warning(f"Valve vision update failed: {exc}")
+            if self._valve_vision_atomic_write_json_fn is not None and self.valve_vision_status_file:
+                status = self._invalid_valve_vision_status(f"exception:{type(exc).__name__}", self_check)
+                try:
+                    self._valve_vision_atomic_write_json_fn(self.valve_vision_status_file, status)
+                    self._append_valve_vision_metrics(status)
+                except Exception:
+                    pass
+
     def _write_sim_status(self):
         if not self.sim_status_file:
             return
@@ -983,6 +1529,7 @@ class LocoManipSimulator(BaseSimulator):
         self.t += self.sim_dt
         self._draw_ee_tracking_markers()
         self._write_sim_status()
+        self._maybe_update_valve_vision()
 
 
 if __name__ == "__main__":

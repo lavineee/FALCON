@@ -635,6 +635,7 @@ class LocoManipWithHandSimulator(LocoManipSimulator):
         self.t += self.sim_dt
         self._draw_ee_tracking_markers()
         self._write_sim_status()
+        self._maybe_update_valve_vision()
 
     def _sim_status_extra_payload(self):
         right_q = self.mj_data.qpos[self.right_hand_map["qpos_adrs"]].copy()
