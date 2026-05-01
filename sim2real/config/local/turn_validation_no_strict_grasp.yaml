@@ -1,0 +1,44 @@
+# Local experiment overlay: validate valve angle tracking without using strict
+# MuJoCo hand contact topology as a flow-blocking gate.
+#
+# Strict grasp/PTIM remains logged as diagnostics; it is not used to block
+# close timeout, turn entry, or turn completion in this experiment mode.
+
+valve_grasp_success_mode: "strict_topology"
+
+# Close hand establishes contact for a fixed window; timeout proceeds to hold
+# instead of failing on imperfect PTIM.
+valve_enter_hold_on_close_timeout: true
+
+# Turn entry: do not require strict grasp success. Keep weak contact thresholds
+# in the log and retain max-force safety.
+valve_turn_entry_require_success: false
+valve_turn_entry_min_contact_count: 1
+valve_turn_entry_min_contact_force_n: 1.0
+valve_turn_entry_max_contact_force_n: 200.0
+valve_turn_entry_max_slip_m: 0.30
+valve_turn_start_on_hold_entry: true
+
+# Turn completion: judge task quality by post-processed valve angle error.
+# A zero max slip disables this completion-quality check; turn-time safety
+# aborts still use valve_turn_abort_* below.
+valve_turn_completion_require_grasp: false
+valve_turn_completion_min_contact_health_ratio: 0.0
+valve_turn_completion_max_slip_m: 0.0
+valve_turn_completion_max_grasp_error_m: 0.0
+valve_turn_completion_timeout_is_failure: false
+
+# Keep safety aborts, but avoid the old frequent slip abort in data collection.
+valve_turn_abort_slip_m: 0.30
+valve_turn_abort_contact_force_n: 200.0
+valve_turn_abort_base_tilt_deg: 12.0
+valve_turn_abort_valve_vel_rad_s: 8.0
+valve_turn_abort_min_base_to_valve_x_m: 0.30
+valve_turn_abort_max_base_approach_m: 0.12
+
+# C1: tangent-only contact compensation. This is a local experiment candidate,
+# not a global default.
+valve_contact_compensation_frame: "valve"
+valve_contact_compensation_axis_scale: 0.0
+valve_contact_compensation_radial_scale: 0.0
+valve_contact_compensation_tangent_scale: 1.0

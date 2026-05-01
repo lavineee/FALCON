@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import sys
@@ -56,6 +57,19 @@ def _angle_diff_deg(a, b):
     return float((float(a) - float(b) + 180.0) % 360.0 - 180.0)
 
 
+def _rotation_angle_deg(R_a, R_b):
+    try:
+        R_a = np.asarray(R_a, dtype=float).reshape(3, 3)
+        R_b = np.asarray(R_b, dtype=float).reshape(3, 3)
+    except Exception:
+        return np.nan
+    if not np.all(np.isfinite(R_a)) or not np.all(np.isfinite(R_b)):
+        return np.nan
+    delta = R_a.T @ R_b
+    cos_angle = np.clip((float(np.trace(delta)) - 1.0) * 0.5, -1.0, 1.0)
+    return float(np.rad2deg(np.arccos(cos_angle)))
+
+
 def _parse_float_sequence(value):
     """Parse a YAML/env sequence like [10, -20, 30] or '10,-20,30'."""
     if value is None:
@@ -68,6 +82,40 @@ def _parse_float_sequence(value):
     text = text.strip("[]()")
     parts = [part.strip() for part in text.replace(";", ",").split(",")]
     return [float(part) for part in parts if part]
+
+
+def _optional_abs_float(value, default=None):
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("", "none", "null", "off", "false"):
+        return default
+    return abs(float(value))
+
+
+def _parse_string_sequence(value, default=None):
+    if value is None:
+        return list(default or [])
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text:
+        return list(default or [])
+    try:
+        parsed = yaml.safe_load(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, (list, tuple)):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    return [part.strip().strip("'\"") for part in text.split(",") if part.strip()]
+
+
+def _topology_token(value):
+    return str(value or "").strip().upper()
+
+
+def _compact_topology_token(value):
+    return _topology_token(value).replace("-", "")
 
 
 def _csv_token(value):
@@ -164,6 +212,8 @@ class SimStatusGraspGeometryProvider:
             "contact_count": int(status.get("right_hand_valve_contact_count", 0)),
             "contact_normal_force": float(status.get("right_hand_valve_contact_normal_force", 0.0)),
             "contact_pairs": status.get("right_hand_valve_contact_pairs", []),
+            "contact_role_counts": status.get("right_hand_valve_contact_role_counts", {}),
+            "contact_role_forces": status.get("right_hand_valve_contact_role_forces", {}),
             "real_contact_count": int(
                 status.get(
                     "right_hand_valve_real_contact_count",
@@ -180,6 +230,8 @@ class SimStatusGraspGeometryProvider:
                 "right_hand_valve_real_contact_pairs",
                 status.get("right_hand_valve_contact_pairs", []),
             ),
+            "real_contact_role_counts": status.get("right_hand_valve_real_contact_role_counts", {}),
+            "real_contact_role_forces": status.get("right_hand_valve_real_contact_role_forces", {}),
             "right_hand_state": status.get("right_hand_state", "unknown"),
             "right_hand_q": status.get("right_hand_q", [np.nan] * 7),
             "right_hand_target_q": status.get("right_hand_target_q", [np.nan] * 7),
@@ -195,9 +247,61 @@ class SimStatusGraspGeometryProvider:
             ),
             "debug_contact_pairs": status.get("debug_contact_pairs", []),
             "debug_geom_world": status.get("debug_geom_world", {}),
+            "root_lin_vel_world": np.asarray(status.get("root_lin_vel_world", [np.nan] * 3), dtype=float).reshape(3),
+            "root_ang_vel_world": np.asarray(status.get("root_ang_vel_world", [np.nan] * 3), dtype=float).reshape(3),
+            "left_foot_pos_world": np.asarray(status.get("left_foot_pos_world", [np.nan] * 3), dtype=float).reshape(3),
+            "right_foot_pos_world": np.asarray(status.get("right_foot_pos_world", [np.nan] * 3), dtype=float).reshape(3),
             "left_foot_force": float(status.get("left_foot_force", 0.0)),
             "right_foot_force": float(status.get("right_foot_force", 0.0)),
             "feet_contact_stable": bool(status.get("feet_contact_stable", False)),
+            "hand_valve_force_world": np.asarray(
+                status.get("right_hand_valve_contact_force_world", [0.0, 0.0, 0.0]),
+                dtype=float,
+            ).reshape(3),
+            "hand_valve_force_axis_n": float(status.get("right_hand_valve_contact_force_axis", 0.0)),
+            "hand_valve_force_radial_n": float(status.get("right_hand_valve_contact_force_radial", 0.0)),
+            "hand_valve_force_tangent_n": float(status.get("right_hand_valve_contact_force_tangent", 0.0)),
+            "hand_valve_force_axis_abs_n": float(status.get("right_hand_valve_contact_force_axis_abs", 0.0)),
+            "hand_valve_force_radial_abs_n": float(status.get("right_hand_valve_contact_force_radial_abs", 0.0)),
+            "hand_valve_force_tangent_abs_n": float(status.get("right_hand_valve_contact_force_tangent_abs", 0.0)),
+            "abs_force_axis_over_tangent": float(
+                status.get("right_hand_valve_contact_force_axis_abs_over_tangent", 0.0)
+            ),
+            "abs_force_radial_over_tangent": float(
+                status.get("right_hand_valve_contact_force_radial_abs_over_tangent", 0.0)
+            ),
+            "real_hand_valve_force_world": np.asarray(
+                status.get("right_hand_valve_real_contact_force_world", [0.0, 0.0, 0.0]),
+                dtype=float,
+            ).reshape(3),
+            "real_hand_valve_force_axis_n": float(status.get("right_hand_valve_real_contact_force_axis", 0.0)),
+            "real_hand_valve_force_radial_n": float(status.get("right_hand_valve_real_contact_force_radial", 0.0)),
+            "real_hand_valve_force_tangent_n": float(status.get("right_hand_valve_real_contact_force_tangent", 0.0)),
+            "real_hand_valve_force_axis_abs_n": float(status.get("right_hand_valve_real_contact_force_axis_abs", 0.0)),
+            "real_hand_valve_force_radial_abs_n": float(status.get("right_hand_valve_real_contact_force_radial_abs", 0.0)),
+            "real_hand_valve_force_tangent_abs_n": float(status.get("right_hand_valve_real_contact_force_tangent_abs", 0.0)),
+            "real_abs_force_axis_over_tangent": float(
+                status.get("right_hand_valve_real_contact_force_axis_abs_over_tangent", 0.0)
+            ),
+            "real_abs_force_radial_over_tangent": float(
+                status.get("right_hand_valve_real_contact_force_radial_abs_over_tangent", 0.0)
+            ),
+            "proxy_or_assist_force_world": np.asarray(
+                status.get("right_hand_valve_proxy_contact_force_world", [0.0, 0.0, 0.0]),
+                dtype=float,
+            ).reshape(3),
+            "proxy_or_assist_force_axis_n": float(status.get("right_hand_valve_proxy_contact_force_axis", 0.0)),
+            "proxy_or_assist_force_radial_n": float(status.get("right_hand_valve_proxy_contact_force_radial", 0.0)),
+            "proxy_or_assist_force_tangent_n": float(status.get("right_hand_valve_proxy_contact_force_tangent", 0.0)),
+            "proxy_or_assist_force_axis_abs_n": float(status.get("right_hand_valve_proxy_contact_force_axis_abs", 0.0)),
+            "proxy_or_assist_force_radial_abs_n": float(status.get("right_hand_valve_proxy_contact_force_radial_abs", 0.0)),
+            "proxy_or_assist_force_tangent_abs_n": float(status.get("right_hand_valve_proxy_contact_force_tangent_abs", 0.0)),
+            "proxy_or_assist_abs_force_axis_over_tangent": float(
+                status.get("right_hand_valve_proxy_contact_force_axis_abs_over_tangent", 0.0)
+            ),
+            "proxy_or_assist_abs_force_radial_over_tangent": float(
+                status.get("right_hand_valve_proxy_contact_force_radial_abs_over_tangent", 0.0)
+            ),
         }
 
 
@@ -229,11 +333,13 @@ class VisionOverlayGraspGeometryProvider:
         smoothing_enable=True,
         smoothing_alpha=0.35,
         latch_last_valid_approach_geom=True,
-        latched_geom_max_age_s=2.0,
+        latched_geom_max_age_s=0.2,
         use_latched_after_approach=False,
         grasp_forward_axis_sign=-1.0,
         grasp_radial_axis="y",
         grasp_radial_axis_sign=-1.0,
+        grasp_point_semantics="raw_site",
+        use_grasp_R_base=False,
     ):
         self.gt_provider = gt_provider
         self.vision_status_file = vision_status_file
@@ -276,6 +382,12 @@ class VisionOverlayGraspGeometryProvider:
         self.grasp_forward_axis_sign = 1.0 if float(grasp_forward_axis_sign) >= 0.0 else -1.0
         self.grasp_radial_axis = str(grasp_radial_axis).strip().lower()
         self.grasp_radial_axis_sign = 1.0 if float(grasp_radial_axis_sign) >= 0.0 else -1.0
+        self.grasp_point_semantics = str(grasp_point_semantics).strip().lower()
+        if self.grasp_point_semantics in ("raw", "raw_grasp", "site"):
+            self.grasp_point_semantics = "raw_site"
+        if self.grasp_point_semantics not in ("raw_site", "effective"):
+            self.grasp_point_semantics = "raw_site"
+        self.use_grasp_R_base = bool(use_grasp_R_base)
         self._last_accepted_vision_geom = None
         self._last_accepted_vision_timestamp = None
         self._smoothed_vision_geom = None
@@ -545,8 +657,12 @@ class VisionOverlayGraspGeometryProvider:
                 parsed["wheel_R_base"] = _rot3_or_raise(vision["wheel_R_base"], "wheel_R_base")
             if "grasp_R_base" in vision and vision["grasp_R_base"] is not None:
                 parsed["grasp_R_base"] = _rot3_or_raise(vision["grasp_R_base"], "grasp_R_base")
-            if "grasp_base_is_effective" in vision:
-                parsed["grasp_base_is_effective"] = bool(vision["grasp_base_is_effective"])
+            if self.grasp_point_semantics == "raw_site":
+                parsed["grasp_base_is_effective"] = False
+            else:
+                parsed["grasp_base_is_effective"] = bool(
+                    vision.get("grasp_base_is_effective", True)
+                )
             parsed["angle_valid"] = bool(vision.get("angle_valid", False))
             if parsed["angle_valid"]:
                 parsed["valve_angle"] = float(vision["valve_angle"])
@@ -684,7 +800,10 @@ class VisionOverlayGraspGeometryProvider:
             )
             smoothed["spoke_dir_base"] = spoke_dir
         smoothed["wheel_R_base"] = self._construct_wheel_R_base(smoothed, fallback=vision)
-        smoothed["grasp_R_base"] = self._construct_grasp_R_base(smoothed)
+        if self.use_grasp_R_base:
+            smoothed["grasp_R_base"] = self._construct_grasp_R_base(smoothed)
+        else:
+            smoothed.pop("grasp_R_base", None)
         self._smoothed_vision_geom = self._copy_vision_geom(smoothed)
         return smoothed
 
@@ -816,14 +935,15 @@ class VisionOverlayGraspGeometryProvider:
                 "wheel_xmat_world",
             )
 
-        if "grasp_R_base" in vision:
+        overlay["vision_grasp_point_semantics"] = self.grasp_point_semantics
+        overlay["vision_use_grasp_R_base"] = bool(self.use_grasp_R_base)
+        if self.use_grasp_R_base and "grasp_R_base" in vision:
             overlay["grasp_R_base"] = vision["grasp_R_base"].copy()
+            overlay["grasp_R_source"] = "vision"
         else:
             overlay.pop("grasp_R_base", None)
-        if "grasp_base_is_effective" in vision:
-            overlay["grasp_base_is_effective"] = bool(vision["grasp_base_is_effective"])
-        else:
-            overlay.pop("grasp_base_is_effective", None)
+            overlay["grasp_R_source"] = "computed"
+        overlay["grasp_base_is_effective"] = bool(vision.get("grasp_base_is_effective", False))
 
         angle_valid = bool(vision.get("angle_valid", False))
         overlay["vision_angle_valid"] = angle_valid
@@ -881,6 +1001,10 @@ class VisionOverlayGraspGeometryProvider:
             "vision_temporal_outlier": bool(temporal_outlier),
             "vision_smoothing_applied": bool(smoothing_applied),
             "vision_fallback_to_gt": bool(self.fallback_to_gt),
+            "vision_grasp_point_semantics": self.grasp_point_semantics,
+            "vision_use_grasp_R_base": bool(self.use_grasp_R_base),
+            "grasp_base_is_effective": None,
+            "grasp_R_source": "computed",
             "center_error_m": None,
             "grasp_error_m": None,
             "axis_angle_error_deg": None,
@@ -897,6 +1021,10 @@ class VisionOverlayGraspGeometryProvider:
         if payload["vision_angle_valid"]:
             payload["vision_valve_angle"] = float(vision["valve_angle"])
             payload["vision_valve_vel"] = float(vision["valve_vel"])
+        payload["grasp_base_is_effective"] = bool(
+            overlay_geom.get("grasp_base_is_effective", False)
+        )
+        payload["grasp_R_source"] = str(overlay_geom.get("grasp_R_source", "computed"))
 
         center_error = np.asarray(overlay_geom["center_base"], dtype=float) - np.asarray(
             gt_geom["center_base"], dtype=float
@@ -934,6 +1062,9 @@ class VisionOverlayGraspGeometryProvider:
         result["vision_temporal_outlier"] = bool(debug.get("vision_temporal_outlier", False))
         result["vision_smoothing_applied"] = bool(debug.get("vision_smoothing_applied", False))
         result["vision_angle_valid"] = bool(debug.get("vision_angle_valid", False))
+        result["vision_grasp_point_semantics"] = debug.get("vision_grasp_point_semantics", "")
+        result["vision_use_grasp_R_base"] = bool(debug.get("vision_use_grasp_R_base", False))
+        result["grasp_R_source"] = debug.get("grasp_R_source", "")
         if debug.get("vision_angle_valid", False):
             result["vision_valve_angle"] = debug.get("vision_valve_angle", None)
             result["vision_valve_vel"] = debug.get("vision_valve_vel", None)
@@ -1018,11 +1149,13 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                     "vision_latch_last_valid_approach_geom",
                     True,
                 ),
-                latched_geom_max_age_s=self.config.get("vision_latched_geom_max_age_s", 2.0),
+                latched_geom_max_age_s=self.config.get("vision_latched_geom_max_age_s", 0.2),
                 use_latched_after_approach=self.config.get("vision_use_latched_after_approach", False),
                 grasp_forward_axis_sign=self.config.get("valve_grasp_forward_axis_sign", -1.0),
                 grasp_radial_axis=self.config.get("valve_grasp_radial_axis", "y"),
                 grasp_radial_axis_sign=self.config.get("valve_grasp_radial_axis_sign", 1.0),
+                grasp_point_semantics=self.config.get("vision_grasp_point_semantics", "raw_site"),
+                use_grasp_R_base=self.config.get("vision_use_grasp_R_base", False),
             )
             self.logger.info(
                 colored(
@@ -1083,6 +1216,32 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 )
             )
             self.vision_close_latch_source = "current_control"
+        self.vision_close_latch_frame = str(
+            self.config.get("vision_close_latch_frame", "world")
+        ).strip().lower()
+        if self.vision_close_latch_frame not in ("world", "base"):
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported vision_close_latch_frame="
+                    f"{self.vision_close_latch_frame}, using world",
+                    "yellow",
+                )
+            )
+            self.vision_close_latch_frame = "world"
+        self.vision_close_latch_use_gt_grasp_R = bool(
+            self.config.get("vision_close_latch_use_gt_grasp_R", False)
+        )
+        self.vision_close_latch_use_gt_position = bool(
+            self.config.get("vision_close_latch_use_gt_position", False)
+        )
+        self.vision_close_latch_extra_offset_base = np.asarray(
+            self.config.get("vision_close_latch_extra_offset_base", [0.0, 0.0, 0.0]),
+            dtype=float,
+        ).reshape(3)
+        self.vision_close_latch_extra_offset_grasp_frame = np.asarray(
+            self.config.get("vision_close_latch_extra_offset_grasp_frame", [0.0, 0.0, 0.0]),
+            dtype=float,
+        ).reshape(3)
         self.hold_target_mode = str(self.config.get("valve_hold_target_mode", "valve_local")).lower()
         self.hold_latch_mode = str(self.config.get("valve_hold_latch_mode", "desired")).lower()
         self.hold_actual_to_desired_blend = float(
@@ -1100,6 +1259,71 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self.success_require_middle = bool(self.config.get("valve_grasp_success_require_middle", False))
         self.success_require_real_hand_contact = bool(
             self.config.get("valve_grasp_success_require_real_hand_contact", False)
+        )
+        self.grasp_success_mode = str(
+            self.config.get("valve_grasp_success_mode", "strict_topology")
+        ).strip().lower()
+        if self.grasp_success_mode not in ("strict_topology", "functional_probe"):
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported valve_grasp_success_mode="
+                    f"{self.grasp_success_mode}, using strict_topology",
+                    "yellow",
+                )
+            )
+            self.grasp_success_mode = "strict_topology"
+        default_functional_topologies = ("PTIM", "PIM", "PIT", "PTM", "TIM", "P-IM")
+        self.functional_grasp_allowed_topologies = tuple(
+            _topology_token(item)
+            for item in _parse_string_sequence(
+                self.config.get("functional_grasp_allowed_topologies", None),
+                default_functional_topologies,
+            )
+            if _topology_token(item)
+        )
+        self.functional_grasp_allowed_topology_compact = {
+            _compact_topology_token(item)
+            for item in self.functional_grasp_allowed_topologies
+            if _compact_topology_token(item)
+        }
+        self.functional_grasp_min_contacts = int(
+            self.config.get("functional_grasp_min_contacts", 3)
+        )
+        self.functional_grasp_min_force_n = float(
+            self.config.get("functional_grasp_min_force_n", 7.0)
+        )
+        self.functional_grasp_min_contact_roles = int(
+            self.config.get("functional_grasp_min_contact_roles", 3)
+        )
+        self.functional_grasp_max_force_n = float(
+            self.config.get("functional_grasp_max_force_n", 80.0)
+        )
+        self.functional_grasp_max_ee_error_m = float(
+            self.config.get("functional_grasp_max_ee_error_m", 0.08)
+        )
+        self.functional_grasp_max_slip_m = float(
+            self.config.get("functional_grasp_max_slip_m", 0.08)
+        )
+        self.functional_grasp_min_close_progress = float(
+            self.config.get("functional_grasp_min_close_progress", 0.58)
+        )
+        self.functional_grasp_hold_s = float(
+            self.config.get("functional_grasp_hold_s", 0.08)
+        )
+        self.functional_probe_angle_deg = abs(
+            float(self.config.get("functional_probe_angle_deg", 3.0))
+        )
+        self.functional_probe_speed_deg = abs(
+            float(self.config.get("functional_probe_speed_deg", 3.0))
+        )
+        self.functional_probe_min_valve_response_deg = abs(
+            float(self.config.get("functional_probe_min_valve_response_deg", 1.0))
+        )
+        self.functional_probe_max_slip_m = float(
+            self.config.get("functional_probe_max_slip_m", 0.08)
+        )
+        self.functional_probe_max_force_n = float(
+            self.config.get("functional_probe_max_force_n", 100.0)
         )
         self.close_require_real_hand_contact = bool(
             self.config.get("valve_close_require_real_hand_contact", self.success_require_real_hand_contact)
@@ -1139,6 +1363,42 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         )
         self.contact_tracking_compensation_max_m = abs(
             float(self.config.get("valve_contact_tracking_compensation_max_m", 0.0))
+        )
+        self.contact_tracking_compensation_enabled = bool(
+            self.config.get("valve_contact_tracking_compensation_enabled", True)
+        )
+        self.contact_compensation_frame = str(
+            self.config.get("valve_contact_compensation_frame", "base")
+        ).strip().lower()
+        if self.contact_compensation_frame not in ("base", "valve"):
+            self.logger.warning(
+                colored(
+                    "[VALVE_GRASP] unsupported valve_contact_compensation_frame="
+                    f"{self.contact_compensation_frame}, using base",
+                    "yellow",
+                )
+            )
+            self.contact_compensation_frame = "base"
+        self.contact_compensation_axis_scale = float(
+            self.config.get("valve_contact_compensation_axis_scale", 1.0)
+        )
+        self.contact_compensation_radial_scale = float(
+            self.config.get("valve_contact_compensation_radial_scale", 1.0)
+        )
+        self.contact_compensation_tangent_scale = float(
+            self.config.get("valve_contact_compensation_tangent_scale", 1.0)
+        )
+        self.contact_compensation_axis_max_m = _optional_abs_float(
+            self.config.get("valve_contact_compensation_axis_max_m", None),
+            default=None,
+        )
+        self.contact_compensation_radial_max_m = _optional_abs_float(
+            self.config.get("valve_contact_compensation_radial_max_m", None),
+            default=None,
+        )
+        self.contact_compensation_tangent_max_m = _optional_abs_float(
+            self.config.get("valve_contact_compensation_tangent_max_m", None),
+            default=None,
         )
         self.target_rate_limit_mps = abs(float(self.config.get("valve_target_rate_limit_mps", 0.0)))
 
@@ -1385,13 +1645,37 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._close_command_sent = False
         self._success_reported = False
         self._latest_raw_geom = None
+        self._last_control_geom = None
+        self._last_control_geometry_source = None
+        self._last_control_state = None
+        self._last_control_timestamp = None
+        self._last_accepted_vision_control_geom = None
+        self._last_accepted_vision_control_world_geom = None
+        self._last_accepted_vision_control_state = None
+        self._last_accepted_vision_control_timestamp = None
         self._frozen_world_geom = None
         self._close_latched_world_geom = None
         self._close_latched_grasp_local = None
         self._latched_geometry_source = ""
+        self._latched_grasp_R_source = ""
+        self._close_latch_diagnostics = {}
         self._hold_grasp_local = None
         self._close_success_started_t = None
         self._last_grasp_success_t = None
+        self._functional_grasp_candidate_started_t = None
+        self._last_functional_grasp_status = {}
+        self._close_exit_reason = ""
+        self._functional_probe_active = False
+        self._functional_probe_started = False
+        self._functional_probe_success = False
+        self._functional_probe_fail_reason = ""
+        self._functional_probe_start_t = None
+        self._functional_probe_valve_delta_deg = 0.0
+        self._functional_probe_slip_m = np.nan
+        self._functional_probe_force_n = np.nan
+        self._functional_probe_original_turn_target_deg = None
+        self._functional_probe_original_turn_speed_deg = None
+        self._functional_probe_formal_remaining_target_deg = np.nan
         self._turn_started = False
         self._turn_start_angle = 0.0
         self._turn_nominal_duration_s = 0.0
@@ -1413,12 +1697,18 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._last_turn_update_t = None
         self._turn_start_base_to_valve_x_m = None
         self._turn_start_base_yaw_deg = None
+        self._base_to_valve_dist_start_m = None
+        self._base_to_valve_dist_min_m = None
+        self._left_foot_pos_world_ref = None
+        self._right_foot_pos_world_ref = None
+        self._foot_displacement_reference_state = ""
         self._turn_rows = []
         self._turn_segment_summaries = []
         self._overall_summary_written = False
         self._failure_reason = ""
         self._abort_reason = ""
         self._current_command_grasp_base = None
+        self._last_contact_compensation_debug = {}
         self._slip_grasp_local = None
         self._slip_palm_R_local = None
         self._contact_assist_active = False
@@ -1444,10 +1734,23 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         with open(self.log_file, "w") as file:
             file.write(
                 "time_s,state,target_x,target_y,target_z,current_x,current_y,current_z,"
-                "ee_error_m,ik_error_m,servo_error_m,grasp_error_m,"
+                "ee_error_m,ee_error_axis_m,ee_error_radial_m,ee_error_tangent_m,"
+                "ik_error_m,servo_error_m,grasp_error_m,"
                 "valve_angle,valve_vel,contact_count,contact_normal_force,"
                 "contact_topology,real_contact_count,real_contact_normal_force,"
-                "real_contact_topology,grasp_success,attach_enabled,relative_slip_m,"
+                "real_contact_topology,"
+                "palm_contact,thumb_contact,index_contact,middle_contact,"
+                "palm_contact_count,thumb_contact_count,index_contact_count,middle_contact_count,"
+                "palm_contact_force,thumb_contact_force,index_contact_force,middle_contact_force,"
+                "grasp_success,strict_grasp_success,functional_grasp_candidate,"
+                "grasp_success_mode,close_exit_reason,"
+                "functional_candidate_block_reason,functional_roles_count,"
+                "functional_topology_allowed,functional_force_ok,"
+                "functional_close_progress_ok,functional_ee_error_ok,"
+                "functional_force_upper_ok,functional_hold_elapsed,"
+                "probe_turn_started,probe_turn_success,probe_valve_delta_deg,"
+                "probe_slip_m,probe_force_n,probe_fail_reason,"
+                "attach_enabled,relative_slip_m,"
                 "close_slip_m,relative_slip_axial_m,relative_slip_radial_m,"
                 "relative_slip_tangent_m,relative_orientation_slip_deg,"
                 "raw_target_drift_m,attach_site_error_m,"
@@ -1457,13 +1760,44 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 "valve_angle_hold_tau,"
                 "turn_target_delta_deg,turn_reference_delta_deg,turn_command_delta_deg,"
                 "turn_actual_delta_deg,turn_angle_error_deg,turn_final_error_deg,turn_motion_radius_m,"
+                "turn_radius_mode,turn_radius_m,actual_contact_radius_m,"
+                "target_contact_radius_m,radius_error_m,"
                 "base_roll_deg,base_pitch_deg,base_yaw_deg,"
                 "base_to_valve_x,base_to_valve_y,base_to_valve_z,"
+                "base_pos_world_x,base_pos_world_y,base_pos_world_z,"
+                "root_lin_vel_x,root_lin_vel_y,root_lin_vel_z,"
+                "root_ang_vel_x,root_ang_vel_y,root_ang_vel_z,"
+                "base_to_valve_center_dist_m,base_to_valve_panel_axis_dist_m,"
+                "base_to_valve_dist_start_m,base_to_valve_dist_min_m,"
+                "valve_axis_base_x,valve_axis_base_y,valve_axis_base_z,"
+                "valve_radial_base_x,valve_radial_base_y,valve_radial_base_z,"
+                "valve_tangent_base_x,valve_tangent_base_y,valve_tangent_base_z,"
+                "valve_basis_axis_base_x,valve_basis_axis_base_y,valve_basis_axis_base_z,"
+                "valve_basis_radial_base_x,valve_basis_radial_base_y,valve_basis_radial_base_z,"
+                "valve_basis_tangent_base_x,valve_basis_tangent_base_y,valve_basis_tangent_base_z,"
+                "contact_comp_frame,"
+                "contact_comp_raw_base_x,contact_comp_raw_base_y,contact_comp_raw_base_z,"
+                "contact_comp_raw_norm_m,"
+                "contact_comp_axis_m,contact_comp_radial_m,contact_comp_tangent_m,"
+                "contact_comp_axis_scaled_m,contact_comp_radial_scaled_m,contact_comp_tangent_scaled_m,"
+                "contact_comp_axis_scale,contact_comp_radial_scale,contact_comp_tangent_scale,"
+                "contact_comp_scaled_base_x,contact_comp_scaled_base_y,contact_comp_scaled_base_z,"
+                "ee_target_before_comp_base_x,ee_target_before_comp_base_y,ee_target_before_comp_base_z,"
+                "ee_target_after_comp_base_x,ee_target_after_comp_base_y,ee_target_after_comp_base_z,"
+                "left_foot_pos_world_x,left_foot_pos_world_y,left_foot_pos_world_z,"
+                "right_foot_pos_world_x,right_foot_pos_world_y,right_foot_pos_world_z,"
+                "left_foot_displacement_since_reference_m,"
+                "right_foot_displacement_since_reference_m,"
+                "max_foot_displacement_since_reference_m,"
+                "foot_displacement_reference_state,"
                 "left_foot_force,right_foot_force,"
                 "feet_contact_stable,action_norm,"
                 "right_hand_state,right_thumb_q0,right_thumb_q1,right_thumb_q2,"
                 "right_thumb_target_q0,right_thumb_target_q1,right_thumb_target_q2,"
                 "right_thumb_tau0,right_thumb_tau1,right_thumb_tau2,"
+                "right_finger_q3,right_finger_q4,right_finger_q5,right_finger_q6,"
+                "right_finger_target_q3,right_finger_target_q4,right_finger_target_q5,right_finger_target_q6,"
+                "right_finger_tau3,right_finger_tau4,right_finger_tau5,right_finger_tau6,"
                 "right_hand_hold_latched,right_thumb_close_progress,right_finger_close_progress,"
                 "right_thumb_target_close_progress,right_finger_target_close_progress,"
                 "contact_pairs,real_contact_pairs,debug_contact_pairs,"
@@ -1475,13 +1809,64 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 "contact_health_score,contact_health_ratio,"
                 "soft_connect_active,soft_connect_active_ratio,"
                 "contact_force_n,contact_force_peak_n,"
+                "hand_valve_force_axis_n,hand_valve_force_radial_n,hand_valve_force_tangent_n,"
+                "hand_valve_force_axis_abs_n,hand_valve_force_radial_abs_n,hand_valve_force_tangent_abs_n,"
+                "abs_force_axis_over_tangent,abs_force_radial_over_tangent,"
+                "real_hand_valve_force_axis_n,real_hand_valve_force_radial_n,real_hand_valve_force_tangent_n,"
+                "real_hand_valve_force_axis_abs_n,real_hand_valve_force_radial_abs_n,real_hand_valve_force_tangent_abs_n,"
+                "real_abs_force_axis_over_tangent,real_abs_force_radial_over_tangent,"
+                "proxy_or_assist_force_axis_n,proxy_or_assist_force_radial_n,proxy_or_assist_force_tangent_n,"
+                "proxy_or_assist_force_axis_abs_n,proxy_or_assist_force_radial_abs_n,proxy_or_assist_force_tangent_abs_n,"
+                "proxy_or_assist_abs_force_axis_over_tangent,proxy_or_assist_abs_force_radial_over_tangent,"
                 "angle_brake_enabled,angle_brake_torque,angle_brake_peak_torque,"
                 "base_approach_m,base_yaw_drift_deg,base_tilt_deg,max_base_tilt_deg,"
+                "raw_grasp_base_x,raw_grasp_base_y,raw_grasp_base_z,"
+                "effective_grasp_base_x,effective_grasp_base_y,effective_grasp_base_z,"
+                "ee_grasp_target_base_x,ee_grasp_target_base_y,ee_grasp_target_base_z,"
+                "hand_proxy_base_x,hand_proxy_base_y,hand_proxy_base_z,"
+                "grasp_base_is_effective,vision_grasp_point_semantics,"
+                "vision_use_grasp_R_base,grasp_R_source,"
                 "vision_state,geometry_source_used,latched_geometry_source,"
+                "last_control_geometry_source,last_control_state,"
+                "last_accepted_vision_control_age_s,"
+                "latched_from_last_accepted_vision_control_geom,"
+                "latched_from_last_control_geom,latched_from_current_geom,"
+                "close_latch_reason,vision_close_latch_frame,latched_geom_stale,"
+                "latched_geom_max_age_s,"
                 "vision_used_for_control,vision_control_block_reason,"
                 "vision_quality_pass,vision_temporal_outlier,vision_smoothing_applied,"
                 "vision_valid,pose_valid,grasp_valid,grasp_latched,angle_valid,plane_aux_valid,"
-                "segment_result,failure_reason,abort_reason\n"
+                "latched_raw_grasp_base_x,latched_raw_grasp_base_y,latched_raw_grasp_base_z,"
+                "latched_effective_grasp_base_x,latched_effective_grasp_base_y,latched_effective_grasp_base_z,"
+                "latched_ee_target_base_x,latched_ee_target_base_y,latched_ee_target_base_z,"
+                "latched_grasp_R_base_r00,latched_grasp_R_base_r01,latched_grasp_R_base_r02,"
+                "latched_grasp_R_base_r10,latched_grasp_R_base_r11,latched_grasp_R_base_r12,"
+                "latched_grasp_R_base_r20,latched_grasp_R_base_r21,latched_grasp_R_base_r22,"
+                "gt_raw_grasp_base_x,gt_raw_grasp_base_y,gt_raw_grasp_base_z,"
+                "gt_effective_grasp_base_x,gt_effective_grasp_base_y,gt_effective_grasp_base_z,"
+                "gt_ee_target_base_x,gt_ee_target_base_y,gt_ee_target_base_z,"
+                "gt_grasp_R_base_r00,gt_grasp_R_base_r01,gt_grasp_R_base_r02,"
+                "gt_grasp_R_base_r10,gt_grasp_R_base_r11,gt_grasp_R_base_r12,"
+                "gt_grasp_R_base_r20,gt_grasp_R_base_r21,gt_grasp_R_base_r22,"
+                "delta_effective_grasp_vs_gt_m,delta_ee_target_vs_gt_m,delta_grasp_R_vs_gt_deg,"
+                "delta_effective_grasp_vec_base_x,delta_effective_grasp_vec_base_y,"
+                "delta_effective_grasp_vec_base_z,"
+                "delta_ee_target_vec_base_x,delta_ee_target_vec_base_y,delta_ee_target_vec_base_z,"
+                "delta_effective_grasp_vec_grasp_frame_x,delta_effective_grasp_vec_grasp_frame_y,"
+                "delta_effective_grasp_vec_grasp_frame_z,"
+                "delta_ee_target_vec_grasp_frame_x,delta_ee_target_vec_grasp_frame_y,"
+                "delta_ee_target_vec_grasp_frame_z,"
+                "base_latch_delta_effective_grasp_vs_gt_m,base_latch_delta_ee_target_vs_gt_m,"
+                "base_latch_delta_grasp_R_vs_gt_deg,"
+                "world_latch_delta_effective_grasp_vs_gt_m,world_latch_delta_ee_target_vs_gt_m,"
+                "world_latch_delta_grasp_R_vs_gt_deg,"
+                "vision_close_latch_use_gt_grasp_R,vision_close_latch_use_gt_position,"
+                "vision_close_latch_extra_offset_base_x,vision_close_latch_extra_offset_base_y,"
+                "vision_close_latch_extra_offset_base_z,"
+                "vision_close_latch_extra_offset_grasp_frame_x,"
+                "vision_close_latch_extra_offset_grasp_frame_y,"
+                "vision_close_latch_extra_offset_grasp_frame_z,"
+                "segment_result,close_fail_reason,failure_reason,abort_reason\n"
             )
         with open(self.summary_file, "w") as file:
             file.write(
@@ -1512,6 +1897,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             self._write_overall_summary(overall_result="failed")
         if state == self.CLOSE_HAND:
             self._close_success_started_t = None
+            self._functional_grasp_candidate_started_t = None
+            self._close_exit_reason = ""
         if state == self.TURN_HOLD:
             # 到目标角附近后应停止追加圆弧运动；实机上对应“保持当前手端位置”。
             if self._turn_hold_command_delta_deg is None:
@@ -1709,6 +2096,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         return grasp + self.grasp_target_bias_base
 
     def _ee_grasp_target_base(self, geom):
+        if geom is not None and "ee_target_override_base" in geom:
+            return np.asarray(geom["ee_target_override_base"], dtype=float).reshape(3)
         # 阀门轮圈中心应落在闭合手指形成的夹持区域，而不是直接落在 palm site。
         grasp_point = self._valve_grasp_point_base(geom)
         R = self._right_grasp_rotation_base(geom)
@@ -1759,24 +2148,14 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
     def _close_latched_geom(self, raw_geom):
         """闭手后固定同一个抓取框架，避免接触扰动导致目标点跟着阀门 site 漂移。"""
         latched = self._close_latched_world_geom
-        geom = dict(raw_geom)
-        world_to_base = np.asarray(raw_geom["world_to_base"], dtype=float).reshape(3, 3)
-        base_pos = np.asarray(raw_geom["base_pos_world"], dtype=float).reshape(3)
-        center_world = np.asarray(latched["center_world"], dtype=float).reshape(3)
-        grasp_world = np.asarray(latched["grasp_world"], dtype=float).reshape(3)
-        axis_world = np.asarray(latched["axis_world"], dtype=float).reshape(3)
-        R_world = np.asarray(latched["grasp_R_world"], dtype=float).reshape(3, 3)
-
-        axis_base = world_to_base @ axis_world
-        axis_base = axis_base / (np.linalg.norm(axis_base) + 1e-9)
-        geom["center_base"] = world_to_base @ (center_world - base_pos)
-        geom["grasp_base"] = world_to_base @ (grasp_world - base_pos)
-        # grasp_world 已经是应用过 radial_inset 的控制抓点，后续不能再次内缩。
-        geom["grasp_base_is_effective"] = True
-        geom["axis_base"] = axis_base
-        geom["grasp_R_base"] = world_to_base @ R_world
+        geom = self._close_latch_geom_from_world_snapshot(raw_geom, latched)
+        if geom is None:
+            return raw_geom
         geom["grasp_frame_latched"] = True
         geom["latched_geometry_source"] = self._latched_geometry_source
+        geom["grasp_R_source"] = self._latched_grasp_R_source or "computed"
+        for key, value in self._close_latch_diagnostics.items():
+            geom[key] = value.copy() if hasattr(value, "copy") else value
         if self._latched_geometry_source == "vision_overlay":
             geom["geometry_source_used"] = "vision_latched"
             geom["vision_used_for_control"] = True
@@ -1797,6 +2176,80 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         base_pos = np.asarray(geom["base_pos_world"], dtype=float).reshape(3)
         base_to_world = np.asarray(geom["world_to_base"], dtype=float).reshape(3, 3).T
         return base_pos + base_to_world @ np.asarray(point_base, dtype=float).reshape(3)
+
+    def _close_latch_world_snapshot_from_geom(self, geom):
+        if geom is None:
+            return None
+        try:
+            base_to_world = np.asarray(geom["world_to_base"], dtype=float).reshape(3, 3).T
+            center_base = np.asarray(geom["center_base"], dtype=float).reshape(3)
+            raw_grasp_base = np.asarray(geom["grasp_base"], dtype=float).reshape(3)
+            effective_grasp_base = self._valve_grasp_point_base(geom)
+            axis_base = np.asarray(geom["axis_base"], dtype=float).reshape(3)
+            axis_world = base_to_world @ axis_base
+            axis_world = axis_world / (np.linalg.norm(axis_world) + 1e-9)
+            R_base = self._right_grasp_rotation_base(geom)
+            wheel_pos_world = np.asarray(
+                geom.get("wheel_pos_world", geom.get("center_world", self._point_base_to_world(geom, center_base))),
+                dtype=float,
+            ).reshape(3)
+            wheel_R_world = _rot3_or_raise(
+                geom.get("wheel_xmat_world", np.eye(3)),
+                "wheel_R_world",
+            )
+            return {
+                "center_world": self._point_base_to_world(geom, center_base),
+                "raw_grasp_world": self._point_base_to_world(geom, raw_grasp_base),
+                "grasp_world": self._point_base_to_world(geom, effective_grasp_base),
+                "axis_world": axis_world,
+                "grasp_R_world": base_to_world @ R_base,
+                "wheel_pos_world": wheel_pos_world,
+                "wheel_R_world": wheel_R_world,
+                "ee_target_override_world": (
+                    self._point_base_to_world(geom, geom["ee_target_override_base"])
+                    if "ee_target_override_base" in geom
+                    else None
+                ),
+                "grasp_R_source": str(geom.get("grasp_R_source", "")).strip()
+                or ("vision" if "grasp_R_base" in geom else "computed"),
+            }
+        except Exception:
+            return None
+
+    def _close_latch_geom_from_world_snapshot(self, raw_geom, world_geom):
+        if raw_geom is None or world_geom is None:
+            return None
+        geom = dict(raw_geom)
+        world_to_base = np.asarray(raw_geom["world_to_base"], dtype=float).reshape(3, 3)
+        base_pos = np.asarray(raw_geom["base_pos_world"], dtype=float).reshape(3)
+        center_world = np.asarray(world_geom["center_world"], dtype=float).reshape(3)
+        grasp_world = np.asarray(world_geom["grasp_world"], dtype=float).reshape(3)
+        axis_world = np.asarray(world_geom["axis_world"], dtype=float).reshape(3)
+        axis_world = axis_world / (np.linalg.norm(axis_world) + 1e-9)
+        R_world = np.asarray(world_geom["grasp_R_world"], dtype=float).reshape(3, 3)
+
+        axis_base = world_to_base @ axis_world
+        axis_base = axis_base / (np.linalg.norm(axis_base) + 1e-9)
+        geom["center_world"] = center_world
+        geom["grasp_world"] = grasp_world
+        geom["axis_world"] = axis_world
+        geom["center_base"] = world_to_base @ (center_world - base_pos)
+        geom["grasp_base"] = world_to_base @ (grasp_world - base_pos)
+        geom["axis_base"] = axis_base
+        # grasp_world is the effective close grasp point after radial inset.
+        geom["grasp_base_is_effective"] = True
+        geom["grasp_R_base"] = world_to_base @ R_world
+        if "wheel_pos_world" in world_geom:
+            wheel_pos_world = np.asarray(world_geom["wheel_pos_world"], dtype=float).reshape(3)
+            geom["wheel_pos_world"] = wheel_pos_world
+            geom["wheel_pos_base"] = world_to_base @ (wheel_pos_world - base_pos)
+        if "wheel_R_world" in world_geom:
+            geom["wheel_xmat_world"] = np.asarray(world_geom["wheel_R_world"], dtype=float).reshape(3, 3)
+        if world_geom.get("ee_target_override_world", None) is not None:
+            ee_world = np.asarray(world_geom["ee_target_override_world"], dtype=float).reshape(3)
+            geom["ee_target_override_base"] = world_to_base @ (ee_world - base_pos)
+        geom["grasp_R_source"] = str(world_geom.get("grasp_R_source", "")).strip() or "computed"
+        return geom
 
     def _point_world_to_base(self, geom, point_world):
         base_pos = np.asarray(geom["base_pos_world"], dtype=float).reshape(3)
@@ -1956,6 +2409,140 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         world_to_base = np.asarray(geom["world_to_base"], dtype=float).reshape(3, 3)
         return world_to_base @ vec_world
 
+    def _vector_from_geom(self, geom, key, default=np.nan):
+        value = geom.get(key, None) if geom else None
+        if value is None:
+            return np.full(3, default, dtype=float)
+        try:
+            return np.asarray(value, dtype=float).reshape(3)
+        except Exception:
+            return np.full(3, default, dtype=float)
+
+    def _valve_basis_base(self, geom):
+        axis = self._vector_from_geom(geom, "axis_base")
+        axis = _normalize_or_none(axis)
+        if axis is None:
+            axis = np.array([1.0, 0.0, 0.0], dtype=float)
+
+        try:
+            center = np.asarray(geom["center_base"], dtype=float).reshape(3)
+            grasp = self._valve_grasp_point_base(geom)
+            radial = grasp - center
+            radial = radial - np.dot(radial, axis) * axis
+            radial = _normalize_or_none(radial)
+        except Exception:
+            radial = None
+        if radial is None:
+            radial = np.array([0.0, 1.0, 0.0], dtype=float)
+
+        tangent = _normalize_or_none(np.cross(axis, radial))
+        if tangent is None:
+            tangent = np.array([0.0, 0.0, 1.0], dtype=float)
+        return axis, radial, tangent
+
+    @staticmethod
+    def _project_on_basis(vec, basis):
+        try:
+            vec = np.asarray(vec, dtype=float).reshape(3)
+            return np.array([float(np.dot(vec, axis)) for axis in basis], dtype=float)
+        except Exception:
+            return np.full(3, np.nan, dtype=float)
+
+    @staticmethod
+    def _clip_scalar_abs(value, max_abs):
+        value = float(value)
+        if max_abs is None:
+            return value
+        max_abs = abs(float(max_abs))
+        return float(np.clip(value, -max_abs, max_abs))
+
+    def _valve_compensation_basis_base(self, geom):
+        """Return an orthonormal valve basis for compensation, or a fallback reason."""
+        if geom is None:
+            return None, "missing_geom"
+        axis = _normalize_or_none(self._vector_from_geom(geom, "axis_base"))
+        if axis is None:
+            return None, "axis_invalid"
+        try:
+            center = np.asarray(geom["center_base"], dtype=float).reshape(3)
+            grasp = self._valve_grasp_point_base(geom)
+        except Exception:
+            return None, "center_or_grasp_invalid"
+        radial = grasp - center
+        radial = radial - float(np.dot(radial, axis)) * axis
+        radial = _normalize_or_none(radial)
+        if radial is None:
+            return None, "radial_degenerate"
+        tangent = _normalize_or_none(np.cross(axis, radial))
+        if tangent is None:
+            return None, "tangent_degenerate"
+        # Recompute radial from the orthogonal axis/tangent pair to remove tiny
+        # numerical skew before scaling compensation components.
+        radial = _normalize_or_none(np.cross(tangent, axis))
+        if radial is None:
+            return None, "radial_reorthogonalize_failed"
+        return (axis, radial, tangent), ""
+
+    def _contact_compensation_debug_default(self, target_base, frame=None, reason=""):
+        target = np.asarray(target_base, dtype=float).reshape(3)
+        return {
+            "frame": str(frame if frame is not None else self.contact_compensation_frame),
+            "fallback_reason": str(reason or ""),
+            "raw_base": np.zeros(3, dtype=float),
+            "raw_norm_m": 0.0,
+            "components": np.zeros(3, dtype=float),
+            "components_scaled": np.zeros(3, dtype=float),
+            "scaled_base": np.zeros(3, dtype=float),
+            "target_before_base": target.copy(),
+            "target_after_base": target.copy(),
+            "axis_scale": float(self.contact_compensation_axis_scale),
+            "radial_scale": float(self.contact_compensation_radial_scale),
+            "tangent_scale": float(self.contact_compensation_tangent_scale),
+            "basis": (
+                np.full(3, np.nan, dtype=float),
+                np.full(3, np.nan, dtype=float),
+                np.full(3, np.nan, dtype=float),
+            ),
+        }
+
+    def _foot_positions_world(self, geom):
+        left = self._vector_from_geom(geom, "left_foot_pos_world")
+        right = self._vector_from_geom(geom, "right_foot_pos_world")
+        return left, right
+
+    def _set_foot_displacement_reference(self, geom, state):
+        left, right = self._foot_positions_world(geom)
+        if not np.all(np.isfinite(left)) or not np.all(np.isfinite(right)):
+            return
+        self._left_foot_pos_world_ref = left.copy()
+        self._right_foot_pos_world_ref = right.copy()
+        self._foot_displacement_reference_state = str(state)
+
+    def _maybe_set_foot_displacement_reference(self, geom):
+        if self._left_foot_pos_world_ref is not None and self._right_foot_pos_world_ref is not None:
+            return
+        if self.task_state in (
+            self.HOLD_GRASP,
+            self.PRE_TURN_SETTLE,
+            self.TURN_VALVE,
+            self.TURN_HOLD,
+            self.DONE,
+            self.FAILED,
+        ):
+            self._set_foot_displacement_reference(geom, self.task_state)
+
+    def _foot_displacements_world(self, geom):
+        self._maybe_set_foot_displacement_reference(geom)
+        left, right = self._foot_positions_world(geom)
+        left_disp = np.nan
+        right_disp = np.nan
+        if self._left_foot_pos_world_ref is not None and np.all(np.isfinite(left)):
+            left_disp = float(np.linalg.norm(left - self._left_foot_pos_world_ref))
+        if self._right_foot_pos_world_ref is not None and np.all(np.isfinite(right)):
+            right_disp = float(np.linalg.norm(right - self._right_foot_pos_world_ref))
+        max_disp = np.nanmax([left_disp, right_disp]) if np.any(np.isfinite([left_disp, right_disp])) else np.nan
+        return left, right, float(left_disp), float(right_disp), float(max_disp)
+
     def _raw_target_drift_m(self):
         if self._close_latched_world_geom is None or self._latest_raw_geom is None:
             return np.nan
@@ -1964,12 +2551,305 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         latched_grasp_world = np.asarray(self._close_latched_world_geom["grasp_world"], dtype=float).reshape(3)
         return float(np.linalg.norm(raw_grasp_world - latched_grasp_world))
 
-    def _latch_close_grasp_frame(self, geom):
+    def _copy_geom_for_cache(self, geom):
+        if geom is None:
+            return None
+        try:
+            return copy.deepcopy(geom)
+        except Exception:
+            return dict(geom)
+
+    def _geom_field_bool(self, geom, key):
+        if not isinstance(geom, dict):
+            return False
+        debug = geom.get("vision_debug", {})
+        if not isinstance(debug, dict):
+            debug = {}
+        return bool(geom.get(key, debug.get(key, False)))
+
+    def _geom_geometry_source_used(self, geom):
+        if not isinstance(geom, dict):
+            return ""
+        debug = geom.get("vision_debug", {})
+        if not isinstance(debug, dict):
+            debug = {}
+        return str(geom.get("geometry_source_used", debug.get("geometry_source_used", ""))).strip()
+
+    def _record_control_geom(self, geom):
+        if geom is None:
+            return
+        now = time.perf_counter()
+        geom_copy = self._copy_geom_for_cache(geom)
+        self._last_control_geom = geom_copy
+        self._last_control_geometry_source = self._control_geometry_source(geom)
+        self._last_control_state = self.task_state
+        self._last_control_timestamp = now
+
+        override_states = getattr(self.geometry_provider, "override_states", set())
+        if not override_states:
+            override_states = set()
+        geometry_source_used = self._geom_geometry_source_used(geom)
+        if (
+            self.task_state in override_states
+            and geometry_source_used == "vision_overlay"
+            and self._geom_field_bool(geom, "vision_used_for_control")
+            and self._geom_field_bool(geom, "vision_quality_pass")
+        ):
+            self._last_accepted_vision_control_geom = geom_copy
+            self._last_accepted_vision_control_world_geom = self._close_latch_world_snapshot_from_geom(geom_copy)
+            self._last_accepted_vision_control_state = self.task_state
+            self._last_accepted_vision_control_timestamp = now
+
+    def _control_geom_age_s(self, timestamp):
+        if timestamp is None:
+            return np.nan
+        return float(max(0.0, time.perf_counter() - float(timestamp)))
+
+    def _close_latch_geom_parts(self, geom):
+        raw = np.full(3, np.nan, dtype=float)
+        effective = np.full(3, np.nan, dtype=float)
+        ee_target = np.full(3, np.nan, dtype=float)
+        R = np.full((3, 3), np.nan, dtype=float)
+        if geom is None:
+            return raw, effective, ee_target, R
+        try:
+            raw = np.asarray(geom["grasp_base"], dtype=float).reshape(3)
+        except Exception:
+            pass
+        try:
+            effective = self._valve_grasp_point_base(geom)
+        except Exception:
+            pass
+        try:
+            ee_target = self._ee_grasp_target_base(geom)
+        except Exception:
+            pass
+        try:
+            R = self._right_grasp_rotation_base(geom)
+        except Exception:
+            pass
+        return raw, effective, ee_target, R
+
+    def _close_latch_delta_summary(self, latch_geom, gt_geom):
+        _, latched_effective, latched_ee, latched_R = self._close_latch_geom_parts(latch_geom)
+        _, gt_effective, gt_ee, gt_R = self._close_latch_geom_parts(gt_geom)
+        if np.all(np.isfinite(latched_effective)) and np.all(np.isfinite(gt_effective)):
+            delta_effective = float(np.linalg.norm(latched_effective - gt_effective))
+        else:
+            delta_effective = np.nan
+        if np.all(np.isfinite(latched_ee)) and np.all(np.isfinite(gt_ee)):
+            delta_ee = float(np.linalg.norm(latched_ee - gt_ee))
+        else:
+            delta_ee = np.nan
+        return delta_effective, delta_ee, _rotation_angle_deg(latched_R, gt_R)
+
+    def _close_latch_delta_vectors(self, latch_geom, gt_geom):
+        _, latched_effective, latched_ee, _ = self._close_latch_geom_parts(latch_geom)
+        _, gt_effective, gt_ee, gt_R = self._close_latch_geom_parts(gt_geom)
+        delta_effective_base = latched_effective - gt_effective
+        delta_ee_base = latched_ee - gt_ee
+        if not np.all(np.isfinite(delta_effective_base)):
+            delta_effective_base = np.full(3, np.nan, dtype=float)
+        if not np.all(np.isfinite(delta_ee_base)):
+            delta_ee_base = np.full(3, np.nan, dtype=float)
+        if np.all(np.isfinite(gt_R)):
+            delta_effective_grasp = gt_R.T @ delta_effective_base
+            delta_ee_grasp = gt_R.T @ delta_ee_base
+        else:
+            delta_effective_grasp = np.full(3, np.nan, dtype=float)
+            delta_ee_grasp = np.full(3, np.nan, dtype=float)
+        return delta_effective_base, delta_ee_base, delta_effective_grasp, delta_ee_grasp
+
+    def _apply_close_latch_debug_overrides(self, latch_geom, gt_geom):
+        if latch_geom is None:
+            return latch_geom
+        geom = copy.deepcopy(latch_geom)
+        debug_flags = {
+            "vision_close_latch_use_gt_grasp_R": bool(self.vision_close_latch_use_gt_grasp_R),
+            "vision_close_latch_use_gt_position": bool(self.vision_close_latch_use_gt_position),
+            "vision_close_latch_extra_offset_base": self.vision_close_latch_extra_offset_base.copy(),
+            "vision_close_latch_extra_offset_grasp_frame": self.vision_close_latch_extra_offset_grasp_frame.copy(),
+        }
+        if gt_geom is None:
+            for key, value in debug_flags.items():
+                geom[key] = value.copy() if hasattr(value, "copy") else value
+            return geom
+
+        _, gt_effective, gt_ee, gt_R = self._close_latch_geom_parts(gt_geom)
+        try:
+            current_R = self._right_grasp_rotation_base(geom)
+        except Exception:
+            current_R = np.full((3, 3), np.nan, dtype=float)
+
+        if self.vision_close_latch_use_gt_position and np.all(np.isfinite(gt_ee)):
+            # Keep the diagnostic orientation under test, while pinning the commanded EE target
+            # to the GT close-entry target. The effective point is adjusted so
+            # _ee_grasp_target_base() remains internally consistent with current_R.
+            if np.all(np.isfinite(current_R)):
+                geom["grasp_base"] = gt_ee + current_R @ self.grasp_point_offset_ee
+                geom["grasp_base_is_effective"] = True
+                geom["ee_target_override_base"] = gt_ee.copy()
+            elif np.all(np.isfinite(gt_effective)):
+                geom["grasp_base"] = gt_effective.copy()
+                geom["grasp_base_is_effective"] = True
+        if self.vision_close_latch_use_gt_grasp_R and np.all(np.isfinite(gt_R)):
+            geom["grasp_R_base"] = gt_R.copy()
+            geom["grasp_R_source"] = "gt_debug"
+            current_R = gt_R
+
+        extra_offset = self.vision_close_latch_extra_offset_base.copy()
+        if np.linalg.norm(self.vision_close_latch_extra_offset_grasp_frame) > 0.0:
+            try:
+                R_for_offset = self._right_grasp_rotation_base(geom)
+                extra_offset = extra_offset + R_for_offset @ self.vision_close_latch_extra_offset_grasp_frame
+            except Exception:
+                pass
+        if np.linalg.norm(extra_offset) > 0.0:
+            try:
+                effective = self._valve_grasp_point_base(geom)
+                geom["grasp_base"] = effective + extra_offset
+                geom["grasp_base_is_effective"] = True
+                if "ee_target_override_base" in geom:
+                    geom["ee_target_override_base"] = (
+                        np.asarray(geom["ee_target_override_base"], dtype=float).reshape(3) + extra_offset
+                    )
+            except Exception:
+                pass
+
+        for key, value in debug_flags.items():
+            geom[key] = value.copy() if hasattr(value, "copy") else value
+        return geom
+
+    def _close_latch_diagnostics_for(
+        self,
+        latch_geom,
+        gt_geom,
+        *,
+        last_control_geometry_source,
+        last_control_state,
+        last_accepted_vision_control_age_s,
+        latched_from_last_accepted_vision_control_geom,
+        latched_from_last_control_geom,
+        latched_from_current_geom,
+        close_latch_reason,
+        vision_close_latch_frame="world",
+        latched_geom_stale=False,
+        latched_geom_max_age_s=np.nan,
+        base_latch_delta=None,
+        world_latch_delta=None,
+    ):
+        latched_raw, latched_effective, latched_ee, latched_R = self._close_latch_geom_parts(latch_geom)
+        gt_raw, gt_effective, gt_ee, gt_R = self._close_latch_geom_parts(gt_geom)
+        delta_effective, delta_ee, delta_R = self._close_latch_delta_summary(latch_geom, gt_geom)
+        delta_effective_vec_base, delta_ee_vec_base, delta_effective_vec_grasp, delta_ee_vec_grasp = (
+            self._close_latch_delta_vectors(latch_geom, gt_geom)
+        )
+        if base_latch_delta is None:
+            base_latch_delta = (np.nan, np.nan, np.nan)
+        if world_latch_delta is None:
+            world_latch_delta = (np.nan, np.nan, np.nan)
+        return {
+            "last_control_geometry_source": last_control_geometry_source or "",
+            "last_control_state": last_control_state or "",
+            "last_accepted_vision_control_age_s": float(last_accepted_vision_control_age_s),
+            "latched_from_last_accepted_vision_control_geom": bool(latched_from_last_accepted_vision_control_geom),
+            "latched_from_last_control_geom": bool(latched_from_last_control_geom),
+            "latched_from_current_geom": bool(latched_from_current_geom),
+            "close_latch_reason": close_latch_reason or "",
+            "vision_close_latch_frame": vision_close_latch_frame,
+            "latched_geom_stale": bool(latched_geom_stale),
+            "latched_geom_max_age_s": float(latched_geom_max_age_s),
+            "latched_raw_grasp_base": latched_raw,
+            "latched_effective_grasp_base": latched_effective,
+            "latched_ee_target_base": latched_ee,
+            "latched_grasp_R_base": latched_R,
+            "gt_raw_grasp_base": gt_raw,
+            "gt_effective_grasp_base": gt_effective,
+            "gt_ee_target_base": gt_ee,
+            "gt_grasp_R_base": gt_R,
+            "delta_effective_grasp_vs_gt_m": delta_effective,
+            "delta_ee_target_vs_gt_m": delta_ee,
+            "delta_grasp_R_vs_gt_deg": delta_R,
+            "delta_effective_grasp_vec_base": delta_effective_vec_base,
+            "delta_ee_target_vec_base": delta_ee_vec_base,
+            "delta_effective_grasp_vec_grasp_frame": delta_effective_vec_grasp,
+            "delta_ee_target_vec_grasp_frame": delta_ee_vec_grasp,
+            "base_latch_delta_effective_grasp_vs_gt_m": float(base_latch_delta[0]),
+            "base_latch_delta_ee_target_vs_gt_m": float(base_latch_delta[1]),
+            "base_latch_delta_grasp_R_vs_gt_deg": float(base_latch_delta[2]),
+            "world_latch_delta_effective_grasp_vs_gt_m": float(world_latch_delta[0]),
+            "world_latch_delta_ee_target_vs_gt_m": float(world_latch_delta[1]),
+            "world_latch_delta_grasp_R_vs_gt_deg": float(world_latch_delta[2]),
+            "vision_close_latch_use_gt_grasp_R": bool(
+                latch_geom.get(
+                    "vision_close_latch_use_gt_grasp_R",
+                    self.vision_close_latch_use_gt_grasp_R,
+                )
+                if latch_geom
+                else self.vision_close_latch_use_gt_grasp_R
+            ),
+            "vision_close_latch_use_gt_position": bool(
+                latch_geom.get(
+                    "vision_close_latch_use_gt_position",
+                    self.vision_close_latch_use_gt_position,
+                )
+                if latch_geom
+                else self.vision_close_latch_use_gt_position
+            ),
+            "vision_close_latch_extra_offset_base": np.asarray(
+                latch_geom.get(
+                    "vision_close_latch_extra_offset_base",
+                    self.vision_close_latch_extra_offset_base,
+                )
+                if latch_geom
+                else self.vision_close_latch_extra_offset_base,
+                dtype=float,
+            ).reshape(3),
+            "vision_close_latch_extra_offset_grasp_frame": np.asarray(
+                latch_geom.get(
+                    "vision_close_latch_extra_offset_grasp_frame",
+                    self.vision_close_latch_extra_offset_grasp_frame,
+                )
+                if latch_geom
+                else self.vision_close_latch_extra_offset_grasp_frame,
+                dtype=float,
+            ).reshape(3),
+        }
+
+    def _gt_geom_for_latch_comparison(self, fallback_geom):
+        if hasattr(self.geometry_provider, "read_gt"):
+            gt_geom = self.geometry_provider.read_gt()
+            if gt_geom is not None:
+                return gt_geom
+        return fallback_geom
+
+    def _latch_close_grasp_frame(
+        self,
+        geom,
+        prev_control_geom=None,
+        prev_control_geometry_source=None,
+        prev_control_state=None,
+        prev_control_timestamp=None,
+        prev_vision_control_geom=None,
+        prev_vision_control_world_geom=None,
+        prev_vision_control_state=None,
+        prev_vision_control_timestamp=None,
+    ):
         if not self.latch_grasp_frame_on_close or self._close_latched_world_geom is not None:
             return self._control_geom(geom)
 
         latch_geom = geom
         latched_source = self._control_geometry_source(geom)
+        close_latch_reason = "current_geom"
+        latched_from_last_accepted_vision_control_geom = False
+        latched_from_last_control_geom = False
+        latched_from_current_geom = True
+        last_control_geometry_source = prev_control_geometry_source or ""
+        last_control_state = prev_control_state or ""
+        last_accepted_vision_control_age_s = self._control_geom_age_s(prev_vision_control_timestamp)
+        max_age_s = float(self.config.get("vision_latched_geom_max_age_s", 0.2))
+        latched_geom_stale = False
+        selected_world_latch = None
         if self.vision_close_latch_source == "gt":
             gt_geom = None
             if hasattr(self.geometry_provider, "read_gt"):
@@ -1977,34 +2857,97 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             if gt_geom is not None:
                 latch_geom = gt_geom
                 latched_source = "gt"
+                close_latch_reason = "forced_gt"
+                latched_from_current_geom = False
+                selected_world_latch = self._close_latch_world_snapshot_from_geom(latch_geom)
             else:
                 latched_source = f"{latched_source}_gt_unavailable"
+                close_latch_reason = "forced_gt_unavailable_current_geom"
+        elif self.valve_geometry_source != "gt":
+            vision_fresh = (
+                prev_vision_control_geom is not None
+                and np.isfinite(last_accepted_vision_control_age_s)
+                and (max_age_s < 0.0 or last_accepted_vision_control_age_s <= max_age_s)
+            )
+            if vision_fresh:
+                latch_geom = prev_vision_control_geom
+                latched_source = "vision_overlay"
+                close_latch_reason = "last_accepted_vision_control_geom"
+                latched_from_last_accepted_vision_control_geom = True
+                latched_from_current_geom = False
+                selected_world_latch = prev_vision_control_world_geom
+                if selected_world_latch is None:
+                    selected_world_latch = self._close_latch_world_snapshot_from_geom(latch_geom)
+                if prev_vision_control_state:
+                    last_control_state = prev_vision_control_state
+            else:
+                latched_geom_stale = prev_vision_control_geom is not None
+            if (
+                not vision_fresh
+                and prev_control_geom is not None
+                and not str(prev_control_geometry_source or "").startswith("vision")
+            ):
+                latch_geom = prev_control_geom
+                latched_source = prev_control_geometry_source or self._control_geometry_source(prev_control_geom)
+                close_latch_reason = "latched_geom_stale" if latched_geom_stale else "last_control_geom"
+                latched_from_last_control_geom = True
+                latched_from_current_geom = False
+                selected_world_latch = self._close_latch_world_snapshot_from_geom(latch_geom)
+            elif not vision_fresh:
+                close_latch_reason = "latched_geom_stale" if latched_geom_stale else "current_geom"
+                selected_world_latch = self._close_latch_world_snapshot_from_geom(latch_geom)
+        if selected_world_latch is None:
+            selected_world_latch = self._close_latch_world_snapshot_from_geom(latch_geom)
 
-        base_to_world = np.asarray(latch_geom["world_to_base"], dtype=float).reshape(3, 3).T
-        center_base = np.asarray(latch_geom["center_base"], dtype=float).reshape(3)
-        grasp_base = self._valve_grasp_point_base(latch_geom)
-        axis_base = np.asarray(latch_geom["axis_base"], dtype=float).reshape(3)
-        axis_world = base_to_world @ axis_base
-        axis_world = axis_world / (np.linalg.norm(axis_world) + 1e-9)
-        R_base = self._right_grasp_rotation_base(latch_geom)
+        grasp_R_source = str(latch_geom.get("grasp_R_source", "")).strip()
+        if not grasp_R_source:
+            grasp_R_source = "vision" if "grasp_R_base" in latch_geom else "computed"
 
-        grasp_world = self._point_base_to_world(latch_geom, grasp_base)
-        self._close_latched_world_geom = {
-            "center_world": self._point_base_to_world(latch_geom, center_base),
-            "grasp_world": grasp_world,
-            "axis_world": axis_world,
-            "grasp_R_world": base_to_world @ R_base,
-        }
+        gt_compare_geom = self._gt_geom_for_latch_comparison(geom)
+        world_latch_geom = self._close_latch_geom_from_world_snapshot(geom, selected_world_latch)
+        if world_latch_geom is None:
+            world_latch_geom = latch_geom
+        base_latch_delta = self._close_latch_delta_summary(latch_geom, gt_compare_geom)
+        world_latch_delta = self._close_latch_delta_summary(world_latch_geom, gt_compare_geom)
+        actual_latch_geom = world_latch_geom if self.vision_close_latch_frame == "world" else latch_geom
+        actual_latch_geom = self._apply_close_latch_debug_overrides(actual_latch_geom, gt_compare_geom)
+        self._close_latched_world_geom = self._close_latch_world_snapshot_from_geom(actual_latch_geom)
+        if self._close_latched_world_geom is None:
+            self._close_latched_world_geom = selected_world_latch
         self._latched_geometry_source = "vision_overlay" if str(latched_source).startswith("vision") else "gt"
-        self._close_latched_grasp_local = self._world_to_valve_local(latch_geom, grasp_world)
+        self._latched_grasp_R_source = str(
+            (self._close_latched_world_geom or selected_world_latch or {}).get("grasp_R_source", grasp_R_source)
+        ).strip() or grasp_R_source
+        if self.vision_close_latch_frame == "base":
+            self._close_latched_world_geom = self._close_latch_world_snapshot_from_geom(actual_latch_geom)
+        self._close_latched_grasp_local = self._world_to_valve_local(
+            actual_latch_geom,
+            np.asarray(self._close_latched_world_geom["grasp_world"], dtype=float).reshape(3),
+        )
+        self._close_latch_diagnostics = self._close_latch_diagnostics_for(
+            actual_latch_geom,
+            gt_compare_geom,
+            last_control_geometry_source=last_control_geometry_source,
+            last_control_state=last_control_state,
+            last_accepted_vision_control_age_s=last_accepted_vision_control_age_s,
+            latched_from_last_accepted_vision_control_geom=latched_from_last_accepted_vision_control_geom,
+            latched_from_last_control_geom=latched_from_last_control_geom,
+            latched_from_current_geom=latched_from_current_geom,
+            close_latch_reason=close_latch_reason,
+            vision_close_latch_frame=self.vision_close_latch_frame,
+            latched_geom_stale=latched_geom_stale,
+            latched_geom_max_age_s=max_age_s,
+            base_latch_delta=base_latch_delta,
+            world_latch_delta=world_latch_delta,
+        )
         self.logger.info(
             colored(
                 "[VALVE_GRASP] close grasp frame latched "
-                f"(source={self._latched_geometry_source})",
+                f"(source={self._latched_geometry_source}, reason={close_latch_reason})",
                 "cyan",
             )
         )
-        return self._close_latched_geom(latch_geom)
+        return self._close_latched_geom(geom if self.vision_close_latch_frame == "world" else latch_geom)
 
     def _control_geometry_source(self, geom):
         if not geom:
@@ -2069,9 +3012,21 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
 
         self._current_target_base = target
         self._current_command_grasp_base = None
+        last_comp_debug = getattr(self, "_last_contact_compensation_debug", {})
+        try:
+            last_after = np.asarray(last_comp_debug.get("target_after_base"), dtype=float).reshape(3)
+        except Exception:
+            last_after = np.full(3, np.nan, dtype=float)
+        if not np.all(np.isfinite(last_after)) or np.linalg.norm(last_after - target) > 1e-7:
+            self._last_contact_compensation_debug = self._contact_compensation_debug_default(
+                target,
+                frame="none",
+                reason="not_applied",
+            )
         if self.align_grasp_orientation and geom is not None:
             self.EE_right_R = self._right_grasp_rotation_base(geom)
         self._set_right_target(self._current_target_base)
+        self._record_control_geom(geom)
 
     def _approach_compensated_target_base(self, target_base, robot_state_data, geom=None):
         """接近阶段抵消 wrist 和掌心代理点的稳态欠跟踪，避免还没碰到轮缘就一直等待。"""
@@ -2110,12 +3065,20 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
     ):
         """接触后用实际抓握代理点闭环，抵消手指接触把手腕顶开的偏差。"""
         target = np.asarray(target_base, dtype=float).reshape(3)
+        self._last_contact_compensation_debug = self._contact_compensation_debug_default(target)
         if (
-            self.contact_tracking_compensation_gain <= 0.0
+            not self.contact_tracking_compensation_enabled
+            or self.contact_tracking_compensation_gain <= 0.0
             or self.contact_tracking_compensation_max_m <= 0.0
             or geom is None
             or robot_state_data is None
         ):
+            reason = "disabled" if not self.contact_tracking_compensation_enabled else "inactive"
+            self._last_contact_compensation_debug = self._contact_compensation_debug_default(
+                target,
+                frame="disabled" if not self.contact_tracking_compensation_enabled else self.contact_compensation_frame,
+                reason=reason,
+            )
             return target
 
         if desired_grasp_base is None:
@@ -2127,7 +3090,81 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         compensation_norm = float(np.linalg.norm(compensation))
         if compensation_norm > self.contact_tracking_compensation_max_m:
             compensation *= self.contact_tracking_compensation_max_m / (compensation_norm + 1e-9)
-        return target + compensation
+
+        if self.contact_compensation_frame == "base":
+            # Preserve the historical baseline exactly in the default mode:
+            # compute a 3D base-frame correction and clip only its vector norm.
+            compensated = target + compensation
+            basis = self._valve_basis_base(geom)
+            components = self._project_on_basis(compensation, basis)
+            self._last_contact_compensation_debug = {
+                **self._contact_compensation_debug_default(target, frame="base"),
+                "raw_base": compensation.copy(),
+                "raw_norm_m": float(np.linalg.norm(compensation)),
+                "components": components,
+                "components_scaled": components.copy(),
+                "scaled_base": compensation.copy(),
+                "target_after_base": compensated.copy(),
+                "basis": basis,
+            }
+            return compensated
+
+        basis, basis_reason = self._valve_compensation_basis_base(geom)
+        if basis is None:
+            compensated = target + compensation
+            fallback_basis = self._valve_basis_base(geom)
+            components = self._project_on_basis(compensation, fallback_basis)
+            self._last_contact_compensation_debug = {
+                **self._contact_compensation_debug_default(
+                    target,
+                    frame="base_fallback",
+                    reason=basis_reason,
+                ),
+                "raw_base": compensation.copy(),
+                "raw_norm_m": float(np.linalg.norm(compensation)),
+                "components": components,
+                "components_scaled": components.copy(),
+                "scaled_base": compensation.copy(),
+                "target_after_base": compensated.copy(),
+                "basis": fallback_basis,
+            }
+            return compensated
+
+        components = self._project_on_basis(compensation, basis)
+        scaled_components = np.array(
+            [
+                self._clip_scalar_abs(
+                    components[0] * self.contact_compensation_axis_scale,
+                    self.contact_compensation_axis_max_m,
+                ),
+                self._clip_scalar_abs(
+                    components[1] * self.contact_compensation_radial_scale,
+                    self.contact_compensation_radial_max_m,
+                ),
+                self._clip_scalar_abs(
+                    components[2] * self.contact_compensation_tangent_scale,
+                    self.contact_compensation_tangent_max_m,
+                ),
+            ],
+            dtype=float,
+        )
+        scaled_compensation = (
+            basis[0] * scaled_components[0]
+            + basis[1] * scaled_components[1]
+            + basis[2] * scaled_components[2]
+        )
+        compensated = target + scaled_compensation
+        self._last_contact_compensation_debug = {
+            **self._contact_compensation_debug_default(target, frame="valve"),
+            "raw_base": compensation.copy(),
+            "raw_norm_m": float(np.linalg.norm(compensation)),
+            "components": components,
+            "components_scaled": scaled_components,
+            "scaled_base": scaled_compensation.copy(),
+            "target_after_base": compensated.copy(),
+            "basis": basis,
+        }
+        return compensated
 
     def _command_geom_for_grasp_base(self, geom, grasp_base):
         command_geom = dict(geom)
@@ -2167,6 +3204,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         if self.align_grasp_orientation:
             self.EE_right_R = R
         self._set_right_target(self._current_target_base)
+        self._record_control_geom(command_geom)
         return command_geom
 
     def _current_error(self, robot_state_data):
@@ -2266,6 +3304,20 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             return float(np.linalg.norm(self._turn_r0_world))
         return np.nan
 
+    def _point_radius_to_valve_axis_world(self, geom, point_world):
+        if geom is None:
+            return np.nan
+        try:
+            center = np.asarray(geom["center_world"], dtype=float).reshape(3)
+            axis = _normalize_or_none(np.asarray(geom["axis_world"], dtype=float).reshape(3))
+            if axis is None:
+                return np.nan
+            radius = np.asarray(point_world, dtype=float).reshape(3) - center
+            radius = radius - float(np.dot(radius, axis)) * axis
+            return float(np.linalg.norm(radius))
+        except Exception:
+            return np.nan
+
     def _set_turn_delta_target(self, geom, delta_deg, robot_state_data=None):
         self._turn_cmd_deg = float(delta_deg)
         self._turn_command_delta_deg = self._turn_cmd_deg
@@ -2340,6 +3392,14 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._turn_cmd_deg = 0.0
         self._last_turn_update_t = None
         self._turn_start_base_to_valve_x_m = float(self._base_to_valve_world(geom)[0])
+        base_to_valve_world = self._base_to_valve_world(geom)
+        if np.all(np.isfinite(base_to_valve_world)):
+            self._base_to_valve_dist_start_m = float(np.linalg.norm(base_to_valve_world))
+            self._base_to_valve_dist_min_m = self._base_to_valve_dist_start_m
+        else:
+            self._base_to_valve_dist_start_m = np.nan
+            self._base_to_valve_dist_min_m = np.nan
+        self._set_foot_displacement_reference(geom, "turn_start")
         _, _, start_yaw = _base_rpy_deg(geom)
         self._turn_start_base_yaw_deg = float(start_yaw)
         self._turn_rows = []
@@ -2900,6 +3960,268 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             and has_middle
         )
 
+    def _functional_grasp_status(self, geom, robot_state_data):
+        real_groups = self._contact_groups(geom, real_only=True)
+        role_count = sum(1 for key in ("palm", "thumb", "index", "middle") if real_groups[key])
+        topology = (
+            ("P" if real_groups["palm"] else "-")
+            + ("T" if real_groups["thumb"] else "-")
+            + ("I" if real_groups["index"] else "-")
+            + ("M" if real_groups["middle"] else "-")
+        )
+        topology_token = _topology_token(topology)
+        compact_topology = _compact_topology_token(topology)
+        real_count = int(geom.get("real_contact_count", geom.get("contact_count", 0))) if geom else 0
+        real_force = float(
+            geom.get("real_contact_normal_force", geom.get("contact_normal_force", 0.0))
+        ) if geom else 0.0
+        _, _, ee_error, _, _ = self._current_error(robot_state_data)
+        close_slip = self._close_relative_slip_m(geom, robot_state_data) if geom else np.nan
+        if not np.isfinite(close_slip):
+            close_slip = self._relative_grasp_slip_m(geom, robot_state_data) if geom else np.nan
+        thumb_progress = float(geom.get("right_hand_close_progress_thumb", np.nan)) if geom else np.nan
+        finger_progress = float(geom.get("right_hand_close_progress_finger", np.nan)) if geom else np.nan
+        close_progress = min(thumb_progress, finger_progress)
+        topology_allowed = (
+            not self.functional_grasp_allowed_topologies
+            or topology_token in self.functional_grasp_allowed_topologies
+            or compact_topology in self.functional_grasp_allowed_topology_compact
+        )
+        contact_count_ok = real_count >= self.functional_grasp_min_contacts
+        min_force_ok = (real_force + 1e-6) >= self.functional_grasp_min_force_n
+        max_force_ok = (
+            self.functional_grasp_max_force_n <= 0.0
+            or not np.isfinite(self.functional_grasp_max_force_n)
+            or real_force <= self.functional_grasp_max_force_n + 1e-6
+        )
+        role_count_ok = role_count >= self.functional_grasp_min_contact_roles
+        ee_error_ok = (
+            np.isfinite(ee_error)
+            and (
+                self.functional_grasp_max_ee_error_m <= 0.0
+                or ee_error <= self.functional_grasp_max_ee_error_m
+            )
+        )
+        slip_ok = (
+            np.isfinite(close_slip)
+            and (
+                self.functional_grasp_max_slip_m <= 0.0
+                or close_slip <= self.functional_grasp_max_slip_m
+            )
+        )
+        close_progress_ok = (
+            np.isfinite(close_progress)
+            and close_progress + 1e-6 >= self.functional_grasp_min_close_progress
+        )
+        reasons = []
+        if not contact_count_ok:
+            reasons.append(f"contacts={real_count}<{self.functional_grasp_min_contacts}")
+        if not min_force_ok:
+            reasons.append(f"force={real_force:.2f}<{self.functional_grasp_min_force_n:.2f}N")
+        if not max_force_ok:
+            reasons.append(f"force={real_force:.2f}>{self.functional_grasp_max_force_n:.2f}N")
+        if not role_count_ok:
+            reasons.append(f"roles={role_count}<{self.functional_grasp_min_contact_roles}")
+        if not topology_allowed:
+            reasons.append(f"topology={topology_token}/{compact_topology}_not_allowed")
+        if not ee_error_ok:
+            reasons.append(f"ee_error={ee_error:.4f}>{self.functional_grasp_max_ee_error_m:.4f}m")
+        if not slip_ok:
+            slip_text = "nan" if not np.isfinite(close_slip) else f"{close_slip:.4f}"
+            reasons.append(f"slip={slip_text}>{self.functional_grasp_max_slip_m:.4f}m")
+        if not close_progress_ok:
+            progress_text = "nan" if not np.isfinite(close_progress) else f"{close_progress:.2f}"
+            reasons.append(
+                f"close_progress={progress_text}<{self.functional_grasp_min_close_progress:.2f}"
+            )
+        candidate = (
+            contact_count_ok
+            and min_force_ok
+            and max_force_ok
+            and role_count_ok
+            and topology_allowed
+            and ee_error_ok
+            and slip_ok
+            and close_progress_ok
+        )
+        return {
+            "candidate": bool(candidate),
+            "reason": "ok" if candidate else "|".join(reasons),
+            "real_contact_count": real_count,
+            "real_contact_force": real_force,
+            "role_count": role_count,
+            "topology": topology_token,
+            "compact_topology": compact_topology,
+            "topology_allowed": bool(topology_allowed),
+            "contact_count_ok": bool(contact_count_ok),
+            "force_ok": bool(min_force_ok),
+            "force_upper_ok": bool(max_force_ok),
+            "role_count_ok": bool(role_count_ok),
+            "ee_error_ok": bool(ee_error_ok),
+            "slip_ok": bool(slip_ok),
+            "close_progress_ok": bool(close_progress_ok),
+            "ee_error": float(ee_error),
+            "slip": float(close_slip),
+            "close_progress": float(close_progress),
+        }
+
+    def _functional_grasp_candidate(self, geom, robot_state_data):
+        status = self._functional_grasp_status(geom, robot_state_data)
+        self._last_functional_grasp_status = status
+        return bool(status.get("candidate", False))
+
+    def _functional_probe_direction(self):
+        target = (
+            self._functional_probe_original_turn_target_deg
+            if self._functional_probe_original_turn_target_deg is not None
+            else self.turn_target_deg
+        )
+        return 1.0 if float(target) >= 0.0 else -1.0
+
+    def _functional_probe_status(self, geom, robot_state_data):
+        valve_delta = self._turn_actual_delta_deg(geom) if self._turn_started else 0.0
+        direction = self._functional_probe_direction()
+        response_delta = direction * valve_delta
+        slip = self._relative_grasp_slip_m(geom, robot_state_data)
+        force = float(geom.get("real_contact_normal_force", geom.get("contact_normal_force", 0.0)))
+        response_ok = response_delta >= self.functional_probe_min_valve_response_deg
+        slip_ok = np.isfinite(slip) and (
+            self.functional_probe_max_slip_m <= 0.0
+            or slip <= self.functional_probe_max_slip_m
+        )
+        force_ok = (
+            self.functional_probe_max_force_n <= 0.0
+            or not np.isfinite(self.functional_probe_max_force_n)
+            or force <= self.functional_probe_max_force_n
+        )
+        return {
+            "valve_delta_deg": float(valve_delta),
+            "response_delta_deg": float(response_delta),
+            "slip_m": float(slip),
+            "force_n": float(force),
+            "response_ok": bool(response_ok),
+            "slip_ok": bool(slip_ok),
+            "force_ok": bool(force_ok),
+            "success": bool(response_ok and slip_ok and force_ok),
+        }
+
+    def _functional_probe_failure_reason(self, geom, robot_state_data, final=False):
+        status = self._functional_probe_status(geom, robot_state_data)
+        self._functional_probe_valve_delta_deg = float(status["valve_delta_deg"])
+        self._functional_probe_slip_m = float(status["slip_m"])
+        self._functional_probe_force_n = float(status["force_n"])
+        reasons = []
+        if not status["force_ok"]:
+            reasons.append(
+                f"force={status['force_n']:.2f}>{self.functional_probe_max_force_n:.2f}N"
+            )
+        if not status["slip_ok"]:
+            slip = status["slip_m"]
+            slip_text = "nan" if not np.isfinite(slip) else f"{slip:.4f}"
+            reasons.append(f"slip={slip_text}>{self.functional_probe_max_slip_m:.4f}m")
+        if final and not status["response_ok"]:
+            reasons.append(
+                "insufficient_response="
+                f"{status['response_delta_deg']:.2f}<"
+                f"{self.functional_probe_min_valve_response_deg:.2f}deg"
+            )
+        return "|".join(reasons)
+
+    def _start_functional_probe(self, geom, robot_state_data):
+        if self._functional_probe_active:
+            return
+        self._functional_probe_active = True
+        self._functional_probe_started = True
+        self._functional_probe_success = False
+        self._functional_probe_fail_reason = ""
+        self._functional_probe_start_t = time.perf_counter()
+        self._functional_probe_valve_delta_deg = 0.0
+        self._functional_probe_slip_m = np.nan
+        self._functional_probe_force_n = np.nan
+        self._functional_probe_original_turn_target_deg = float(self.turn_target_deg)
+        self._functional_probe_original_turn_speed_deg = float(self.turn_speed_deg)
+        direction = 1.0 if self._functional_probe_original_turn_target_deg >= 0.0 else -1.0
+        probe_delta = min(
+            abs(self._functional_probe_original_turn_target_deg),
+            self.functional_probe_angle_deg,
+        )
+        probe_delta = max(probe_delta, self.functional_probe_min_valve_response_deg)
+        self.turn_target_deg = direction * probe_delta
+        if self.functional_probe_speed_deg > 1e-6:
+            self.turn_speed_deg = self.functional_probe_speed_deg
+        self.logger.info(
+            colored(
+                f"[VALVE_GRASP] functional probe start target={self.turn_target_deg:+.1f}deg "
+                f"speed={self.turn_speed_deg:.1f}deg/s",
+                "cyan",
+            )
+        )
+        self._start_turn_segment(geom, robot_state_data)
+
+    def _complete_functional_probe(self, geom, robot_state_data):
+        status = self._functional_probe_status(geom, robot_state_data)
+        self._functional_probe_success = True
+        self._functional_probe_active = False
+        self._functional_probe_valve_delta_deg = float(status["valve_delta_deg"])
+        self._functional_probe_slip_m = float(status["slip_m"])
+        self._functional_probe_force_n = float(status["force_n"])
+        original_target = float(
+            self._functional_probe_original_turn_target_deg
+            if self._functional_probe_original_turn_target_deg is not None
+            else self.turn_target_deg
+        )
+        original_speed = float(
+            self._functional_probe_original_turn_speed_deg
+            if self._functional_probe_original_turn_speed_deg is not None
+            else self.turn_speed_deg
+        )
+        remaining = original_target - self._functional_probe_valve_delta_deg
+        if original_target > 0.0 and remaining < 0.0:
+            remaining = 0.0
+        elif original_target < 0.0 and remaining > 0.0:
+            remaining = 0.0
+        self._functional_probe_formal_remaining_target_deg = float(remaining)
+        self.turn_speed_deg = original_speed
+        self.logger.info(
+            colored(
+                "[VALVE_GRASP] functional probe success: "
+                f"delta={self._functional_probe_valve_delta_deg:+.2f}deg, "
+                f"remaining={remaining:+.2f}deg",
+                "green",
+            )
+        )
+        if self.enable_turn and abs(remaining) > max(1e-6, self.turn_tolerance_deg * 0.25):
+            self.turn_target_deg = float(remaining)
+            self._start_turn_segment(geom, robot_state_data)
+        else:
+            self.turn_target_deg = float(remaining)
+            self._prepare_turn_hold_command(geom)
+            self._enter_state(self.TURN_HOLD)
+
+    def _fail_functional_probe(self, geom, robot_state_data, reason):
+        status = self._functional_probe_status(geom, robot_state_data)
+        self._functional_probe_active = False
+        self._functional_probe_success = False
+        self._functional_probe_valve_delta_deg = float(status["valve_delta_deg"])
+        self._functional_probe_slip_m = float(status["slip_m"])
+        self._functional_probe_force_n = float(status["force_n"])
+        self._functional_probe_fail_reason = reason or "unknown"
+        self.logger.warning(
+            colored(
+                "[VALVE_GRASP] functional probe failed: "
+                f"{self._functional_probe_fail_reason}; "
+                f"delta={self._functional_probe_valve_delta_deg:+.2f}deg "
+                f"slip={self._functional_probe_slip_m:.4f}m "
+                f"force={self._functional_probe_force_n:.2f}N",
+                "yellow",
+            )
+        )
+        self._set_failure_reason(
+            "functional_probe_failed:" + _csv_token(self._functional_probe_fail_reason)
+        )
+        self._set_contact_assist(False)
+        self._enter_state(self.FAILED)
+
     def _ready_to_close(self, geom, grasp_error):
         groups = self._contact_groups(geom, real_only=self.close_require_real_hand_contact)
         count_key = "real_contact_count" if self.close_require_real_hand_contact else "contact_count"
@@ -2948,6 +4270,17 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         )
 
     def _update_task_state(self, robot_state_data):
+        prev_control_geom = self._copy_geom_for_cache(self._last_control_geom)
+        prev_control_geometry_source = self._last_control_geometry_source
+        prev_control_state = self._last_control_state
+        prev_control_timestamp = self._last_control_timestamp
+        prev_vision_control_geom = self._copy_geom_for_cache(self._last_accepted_vision_control_geom)
+        prev_vision_control_world_geom = self._copy_geom_for_cache(
+            self._last_accepted_vision_control_world_geom
+        )
+        prev_vision_control_state = self._last_accepted_vision_control_state
+        prev_vision_control_timestamp = self._last_accepted_vision_control_timestamp
+
         raw_geom = self.geometry_provider.read()
         if raw_geom is not None:
             self._latest_raw_geom = raw_geom
@@ -3017,7 +4350,17 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             if self._ready_to_close(geom, grasp_error) or (
                 self.approach_max_s > 0.0 and time.perf_counter() - self._state_enter_t >= self.approach_max_s
             ):
-                geom = self._latch_close_grasp_frame(geom)
+                geom = self._latch_close_grasp_frame(
+                    geom,
+                    prev_control_geom=prev_control_geom,
+                    prev_control_geometry_source=prev_control_geometry_source,
+                    prev_control_state=prev_control_state,
+                    prev_control_timestamp=prev_control_timestamp,
+                    prev_vision_control_geom=prev_vision_control_geom,
+                    prev_vision_control_world_geom=prev_vision_control_world_geom,
+                    prev_vision_control_state=prev_vision_control_state,
+                    prev_vision_control_timestamp=prev_vision_control_timestamp,
+                )
                 self._latest_geom = geom
                 self._set_grasp_target(self._ee_grasp_target_base(geom), geom)
                 self._enter_state(self.CLOSE_HAND)
@@ -3037,22 +4380,54 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
 
             now = time.perf_counter()
             close_elapsed = now - self._state_enter_t
-            if self._grasp_success(geom):
+            strict_success = self._grasp_success(geom)
+            functional_candidate = (
+                self.grasp_success_mode == "functional_probe"
+                and self._functional_grasp_candidate(geom, robot_state_data)
+            )
+            if strict_success:
                 if self._close_success_started_t is None:
                     self._close_success_started_t = now
                     self.logger.info(colored("[VALVE_GRASP] stable contact candidate", "cyan"))
             else:
                 self._close_success_started_t = None
+            if functional_candidate:
+                if self._functional_grasp_candidate_started_t is None:
+                    self._functional_grasp_candidate_started_t = now
+                    self.logger.info(
+                        colored("[VALVE_GRASP] functional grasp candidate", "cyan")
+                    )
+            else:
+                self._functional_grasp_candidate_started_t = None
 
             success_elapsed = 0.0 if self._close_success_started_t is None else now - self._close_success_started_t
+            functional_elapsed = (
+                0.0
+                if self._functional_grasp_candidate_started_t is None
+                else now - self._functional_grasp_candidate_started_t
+            )
             valve_vel_ok = abs(float(geom.get("valve_vel", 0.0))) <= self.hold_entry_max_abs_valve_vel
-            ready_for_hold = (
+            strict_ready_for_hold = (
                 close_elapsed >= self.close_wait_s
                 and success_elapsed >= self.hold_entry_min_success_s
                 and valve_vel_ok
             )
+            functional_ready_for_probe = (
+                self.grasp_success_mode == "functional_probe"
+                and not strict_ready_for_hold
+                and close_elapsed >= self.close_wait_s
+                and functional_elapsed >= self.functional_grasp_hold_s
+                and valve_vel_ok
+            )
+            ready_for_hold = strict_ready_for_hold or functional_ready_for_probe
             close_timed_out = close_elapsed >= self.close_max_s
             if ready_for_hold or close_timed_out:
+                if strict_ready_for_hold:
+                    self._close_exit_reason = "strict_topology"
+                elif functional_ready_for_probe:
+                    self._close_exit_reason = "functional_probe_candidate"
+                elif close_timed_out:
+                    self._close_exit_reason = "close_stage_timeout"
                 if close_timed_out and not ready_for_hold:
                     if not self.enter_hold_on_close_timeout:
                         self.logger.warning(
@@ -3073,6 +4448,12 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 self._latch_hold_grasp_local(geom, robot_state_data)
                 # 真实接触已经形成后，才可选启用柔顺 connect，避免一开始就用约束“拉”到阀门。
                 self._maybe_enable_contact_assist(geom)
+                if functional_ready_for_probe:
+                    if self.enable_turn and abs(self.turn_target_deg) > 1e-6:
+                        self._start_functional_probe(geom, robot_state_data)
+                    else:
+                        self._enter_state(self.HOLD_GRASP)
+                    return
                 if (
                     self.turn_start_on_hold_entry
                     and self.enable_turn
@@ -3191,17 +4572,32 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
 
         if self.task_state == self.TURN_VALVE:
             abort_reason = self._turn_abort_reason(geom, robot_state_data)
+            if self._functional_probe_active and abort_reason is not None:
+                self._fail_functional_probe(geom, robot_state_data, "turn_abort:" + abort_reason)
+                return
             if abort_reason is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] turn aborted: {abort_reason}", "yellow"))
                 self._set_failure_reason(abort_reason, abort=True)
                 self._set_contact_assist(False)
                 self._enter_state(self.FAILED)
                 return
+            if self._functional_probe_active:
+                probe_failure = self._functional_probe_failure_reason(geom, robot_state_data, final=False)
+                if probe_failure:
+                    self._fail_functional_probe(geom, robot_state_data, probe_failure)
+                    return
+                self._update_turn_target(geom, robot_state_data=robot_state_data)
+                if self._functional_probe_status(geom, robot_state_data)["success"]:
+                    self._complete_functional_probe(geom, robot_state_data)
+                return
             self._update_turn_target(geom, robot_state_data=robot_state_data)
             return
 
         if self.task_state == self.TURN_HOLD:
             abort_reason = self._turn_abort_reason(geom, robot_state_data)
+            if self._functional_probe_active and abort_reason is not None:
+                self._fail_functional_probe(geom, robot_state_data, "turn_abort:" + abort_reason)
+                return
             if abort_reason is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] turn hold aborted: {abort_reason}", "yellow"))
                 self._set_failure_reason(abort_reason, abort=True)
@@ -3209,6 +4605,13 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 self._enter_state(self.FAILED)
                 return
             self._hold_turn_command_target(geom, robot_state_data=robot_state_data)
+            if self._functional_probe_active:
+                probe_failure = self._functional_probe_failure_reason(geom, robot_state_data, final=True)
+                if probe_failure:
+                    self._fail_functional_probe(geom, robot_state_data, probe_failure)
+                else:
+                    self._complete_functional_probe(geom, robot_state_data)
+                return
             ready, quality_failure = self._turn_hold_ready_for_next_segment(geom, robot_state_data)
             if quality_failure is not None:
                 self.logger.warning(colored(f"[VALVE_GRASP] turn hold quality failed: {quality_failure}", "yellow"))
@@ -3270,6 +4673,30 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         contact_count = int(geom.get("contact_count", 0))
         normal_force = float(geom.get("contact_normal_force", 0.0))
         success = self._grasp_success(geom)
+        strict_grasp_success = bool(success)
+        functional_status = self._functional_grasp_status(geom, robot_state_data)
+        functional_grasp_candidate = bool(
+            self.grasp_success_mode == "functional_probe"
+            and functional_status.get("candidate", False)
+        )
+        functional_candidate_block_reason = (
+            str(functional_status.get("reason", "unknown"))
+            if self.grasp_success_mode == "functional_probe"
+            else "disabled"
+        )
+        functional_roles_count = int(functional_status.get("role_count", 0))
+        functional_topology_allowed = bool(functional_status.get("topology_allowed", False))
+        functional_force_ok = bool(functional_status.get("force_ok", False))
+        functional_close_progress_ok = bool(
+            functional_status.get("close_progress_ok", False)
+        )
+        functional_ee_error_ok = bool(functional_status.get("ee_error_ok", False))
+        functional_force_upper_ok = bool(functional_status.get("force_upper_ok", False))
+        functional_hold_elapsed = (
+            0.0
+            if self._functional_grasp_candidate_started_t is None
+            else max(0.0, time.perf_counter() - self._functional_grasp_candidate_started_t)
+        )
         attach_enabled = bool(geom.get("attach_enabled", False))
         relative_slip = (
             self._relative_grasp_slip_m(geom, robot_state_data)
@@ -3321,6 +4748,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             turn_angle_error = 0.0
             turn_final_error = self.turn_target_deg
             turn_motion_radius = np.nan
+        turn_radius_mode = self.turn_radius_mode
+        turn_radius_m = turn_motion_radius
 
         base_roll, base_pitch, base_yaw = _base_rpy_deg(geom)
         if "base_pos_world" in geom and "center_world" in geom:
@@ -3329,6 +4758,114 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             )
         else:
             base_to_valve = np.full(3, np.nan, dtype=float)
+        base_pos_world = self._vector_from_geom(geom, "base_pos_world")
+        root_lin_vel_world = self._vector_from_geom(geom, "root_lin_vel_world")
+        root_ang_vel_world = self._vector_from_geom(geom, "root_ang_vel_world")
+        valve_basis = self._valve_basis_base(geom) if "center_base" in geom else (
+            np.array([1.0, 0.0, 0.0], dtype=float),
+            np.array([0.0, 1.0, 0.0], dtype=float),
+            np.array([0.0, 0.0, 1.0], dtype=float),
+        )
+        valve_axis_base, valve_radial_base, valve_tangent_base = valve_basis
+        target_contact_radius_m = np.nan
+        actual_contact_radius_m = np.nan
+        radius_error_m = np.nan
+        try:
+            target_grasp_world = self._point_base_to_world(geom, self._valve_grasp_point_base(geom))
+            target_contact_radius_m = self._point_radius_to_valve_axis_world(geom, target_grasp_world)
+        except Exception:
+            target_contact_radius_m = np.nan
+        try:
+            actual_proxy_base = self._current_grasp_proxy_base(geom, robot_state_data)
+            actual_proxy_world = self._point_base_to_world(geom, actual_proxy_base)
+            actual_contact_radius_m = self._point_radius_to_valve_axis_world(geom, actual_proxy_world)
+        except Exception:
+            actual_contact_radius_m = np.nan
+        if np.isfinite(target_contact_radius_m) and np.isfinite(actual_contact_radius_m):
+            radius_error_m = float(actual_contact_radius_m - target_contact_radius_m)
+
+        contact_comp_debug = getattr(self, "_last_contact_compensation_debug", {})
+        if not isinstance(contact_comp_debug, dict):
+            contact_comp_debug = self._contact_compensation_debug_default(
+                self._current_target_base,
+                frame="unknown",
+            )
+        contact_comp_frame = str(contact_comp_debug.get("frame", "unknown"))
+        contact_comp_raw_base = np.asarray(
+            contact_comp_debug.get("raw_base", np.zeros(3, dtype=float)),
+            dtype=float,
+        ).reshape(3)
+        contact_comp_components = np.asarray(
+            contact_comp_debug.get("components", np.full(3, np.nan, dtype=float)),
+            dtype=float,
+        ).reshape(3)
+        contact_comp_components_scaled = np.asarray(
+            contact_comp_debug.get("components_scaled", np.full(3, np.nan, dtype=float)),
+            dtype=float,
+        ).reshape(3)
+        contact_comp_scaled_base = np.asarray(
+            contact_comp_debug.get("scaled_base", np.zeros(3, dtype=float)),
+            dtype=float,
+        ).reshape(3)
+        ee_target_before_comp_base = np.asarray(
+            contact_comp_debug.get("target_before_base", self._current_target_base),
+            dtype=float,
+        ).reshape(3)
+        ee_target_after_comp_base = np.asarray(
+            contact_comp_debug.get("target_after_base", self._current_target_base),
+            dtype=float,
+        ).reshape(3)
+        contact_comp_basis = contact_comp_debug.get("basis", valve_basis)
+        try:
+            valve_basis_axis_base, valve_basis_radial_base, valve_basis_tangent_base = contact_comp_basis
+            valve_basis_axis_base = np.asarray(valve_basis_axis_base, dtype=float).reshape(3)
+            valve_basis_radial_base = np.asarray(valve_basis_radial_base, dtype=float).reshape(3)
+            valve_basis_tangent_base = np.asarray(valve_basis_tangent_base, dtype=float).reshape(3)
+        except Exception:
+            valve_basis_axis_base, valve_basis_radial_base, valve_basis_tangent_base = valve_basis
+        contact_comp_raw_norm_m = float(
+            contact_comp_debug.get("raw_norm_m", np.linalg.norm(contact_comp_raw_base))
+        )
+        contact_comp_axis_scale = float(
+            contact_comp_debug.get("axis_scale", self.contact_compensation_axis_scale)
+        )
+        contact_comp_radial_scale = float(
+            contact_comp_debug.get("radial_scale", self.contact_compensation_radial_scale)
+        )
+        contact_comp_tangent_scale = float(
+            contact_comp_debug.get("tangent_scale", self.contact_compensation_tangent_scale)
+        )
+        base_to_valve_center_dist_m = (
+            float(np.linalg.norm(base_to_valve)) if np.all(np.isfinite(base_to_valve)) else np.nan
+        )
+        if np.isfinite(base_to_valve_center_dist_m):
+            if self._base_to_valve_dist_start_m is None:
+                self._base_to_valve_dist_start_m = base_to_valve_center_dist_m
+            if self._base_to_valve_dist_min_m is None or not np.isfinite(self._base_to_valve_dist_min_m):
+                self._base_to_valve_dist_min_m = base_to_valve_center_dist_m
+            else:
+                self._base_to_valve_dist_min_m = min(self._base_to_valve_dist_min_m, base_to_valve_center_dist_m)
+        base_to_valve_dist_start_m = (
+            float(self._base_to_valve_dist_start_m)
+            if self._base_to_valve_dist_start_m is not None
+            else np.nan
+        )
+        base_to_valve_dist_min_m = (
+            float(self._base_to_valve_dist_min_m)
+            if self._base_to_valve_dist_min_m is not None
+            else np.nan
+        )
+        base_to_valve_panel_axis_dist_m = np.nan
+        if np.all(np.isfinite(base_to_valve)) and "world_to_base" in geom:
+            base_to_valve_base = np.asarray(geom["world_to_base"], dtype=float).reshape(3, 3) @ base_to_valve
+            base_to_valve_panel_axis_dist_m = abs(float(np.dot(base_to_valve_base, valve_axis_base)))
+        ee_error_vec_base = np.asarray(self._current_target_base, dtype=float).reshape(3) - np.asarray(
+            current, dtype=float
+        ).reshape(3)
+        ee_error_components = self._project_on_basis(ee_error_vec_base, valve_basis)
+        left_foot_pos_world, right_foot_pos_world, left_foot_disp, right_foot_disp, max_foot_disp = (
+            self._foot_displacements_world(geom)
+        )
         left_foot_force = float(geom.get("left_foot_force", 0.0))
         right_foot_force = float(geom.get("right_foot_force", 0.0))
         feet_contact_stable = bool(geom.get("feet_contact_stable", False))
@@ -3345,8 +4882,36 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         right_hand_q = np.asarray(geom.get("right_hand_q", [np.nan] * 7), dtype=float)
         right_hand_target_q = np.asarray(geom.get("right_hand_target_q", [np.nan] * 7), dtype=float)
         right_hand_torque = np.asarray(geom.get("right_hand_torque_cmd", [np.nan] * 7), dtype=float)
+        if right_hand_q.size < 7:
+            right_hand_q = np.pad(right_hand_q.reshape(-1), (0, 7 - right_hand_q.size), constant_values=np.nan)
+        if right_hand_target_q.size < 7:
+            right_hand_target_q = np.pad(
+                right_hand_target_q.reshape(-1),
+                (0, 7 - right_hand_target_q.size),
+                constant_values=np.nan,
+            )
+        if right_hand_torque.size < 7:
+            right_hand_torque = np.pad(
+                right_hand_torque.reshape(-1),
+                (0, 7 - right_hand_torque.size),
+                constant_values=np.nan,
+            )
         right_hand_state = str(geom.get("right_hand_state", "unknown")).replace(",", ";")
         contact_group_counts, contact_health_score, contact_health_ratio = self._contact_health(geom)
+        real_role_counts = geom.get("real_contact_role_counts", {})
+        if not isinstance(real_role_counts, dict):
+            real_role_counts = {}
+        real_role_forces = geom.get("real_contact_role_forces", {})
+        if not isinstance(real_role_forces, dict):
+            real_role_forces = {}
+        role_counts = {
+            key: int(real_role_counts.get(key, contact_group_counts.get(key, 0)))
+            for key in ("palm", "thumb", "index", "middle")
+        }
+        role_forces = {
+            key: float(real_role_forces.get(key, 0.0))
+            for key in ("palm", "thumb", "index", "middle")
+        }
         soft_connect_active = bool(self._contact_assist_active or attach_enabled)
         angle_brake_enabled = bool(
             self.turn_hold_angle_brake_enabled
@@ -3363,6 +4928,34 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             valve_target_angle_deg = np.nan
             valve_angle_error_deg = np.nan
         valve_vel_deg_s = float(np.rad2deg(valve_vel))
+        hand_valve_force_axis_n = float(geom.get("hand_valve_force_axis_n", 0.0))
+        hand_valve_force_radial_n = float(geom.get("hand_valve_force_radial_n", 0.0))
+        hand_valve_force_tangent_n = float(geom.get("hand_valve_force_tangent_n", 0.0))
+        hand_valve_force_axis_abs_n = float(geom.get("hand_valve_force_axis_abs_n", 0.0))
+        hand_valve_force_radial_abs_n = float(geom.get("hand_valve_force_radial_abs_n", 0.0))
+        hand_valve_force_tangent_abs_n = float(geom.get("hand_valve_force_tangent_abs_n", 0.0))
+        abs_force_axis_over_tangent = float(geom.get("abs_force_axis_over_tangent", 0.0))
+        abs_force_radial_over_tangent = float(geom.get("abs_force_radial_over_tangent", 0.0))
+        real_hand_valve_force_axis_n = float(geom.get("real_hand_valve_force_axis_n", 0.0))
+        real_hand_valve_force_radial_n = float(geom.get("real_hand_valve_force_radial_n", 0.0))
+        real_hand_valve_force_tangent_n = float(geom.get("real_hand_valve_force_tangent_n", 0.0))
+        real_hand_valve_force_axis_abs_n = float(geom.get("real_hand_valve_force_axis_abs_n", 0.0))
+        real_hand_valve_force_radial_abs_n = float(geom.get("real_hand_valve_force_radial_abs_n", 0.0))
+        real_hand_valve_force_tangent_abs_n = float(geom.get("real_hand_valve_force_tangent_abs_n", 0.0))
+        real_abs_force_axis_over_tangent = float(geom.get("real_abs_force_axis_over_tangent", 0.0))
+        real_abs_force_radial_over_tangent = float(geom.get("real_abs_force_radial_over_tangent", 0.0))
+        proxy_or_assist_force_axis_n = float(geom.get("proxy_or_assist_force_axis_n", 0.0))
+        proxy_or_assist_force_radial_n = float(geom.get("proxy_or_assist_force_radial_n", 0.0))
+        proxy_or_assist_force_tangent_n = float(geom.get("proxy_or_assist_force_tangent_n", 0.0))
+        proxy_or_assist_force_axis_abs_n = float(geom.get("proxy_or_assist_force_axis_abs_n", 0.0))
+        proxy_or_assist_force_radial_abs_n = float(geom.get("proxy_or_assist_force_radial_abs_n", 0.0))
+        proxy_or_assist_force_tangent_abs_n = float(geom.get("proxy_or_assist_force_tangent_abs_n", 0.0))
+        proxy_or_assist_abs_force_axis_over_tangent = float(
+            geom.get("proxy_or_assist_abs_force_axis_over_tangent", 0.0)
+        )
+        proxy_or_assist_abs_force_radial_over_tangent = float(
+            geom.get("proxy_or_assist_abs_force_radial_over_tangent", 0.0)
+        )
 
         current_turn_metric = {
             "turn_angle_error_deg": float(turn_angle_error),
@@ -3403,6 +4996,17 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             max_base_tilt_deg = base_tilt_deg
         if self.task_state in (self.TURN_VALVE, self.TURN_HOLD) and self._turn_started:
             self._turn_rows.append(current_turn_metric)
+
+        if self._functional_probe_active:
+            probe_status = self._functional_probe_status(geom, robot_state_data)
+            probe_valve_delta_deg = float(probe_status["valve_delta_deg"])
+            probe_slip_m = float(probe_status["slip_m"])
+            probe_force_n = float(probe_status["force_n"])
+        else:
+            probe_valve_delta_deg = float(self._functional_probe_valve_delta_deg)
+            probe_slip_m = float(self._functional_probe_slip_m)
+            probe_force_n = float(self._functional_probe_force_n)
+        probe_fail_reason = _csv_token(self._functional_probe_fail_reason)
 
         segment_result = "failed" if self.task_state == self.FAILED else ("done" if self.task_state == self.DONE else "running")
         contact_pairs = "|".join(
@@ -3447,6 +5051,150 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         grasp_latched = bool(geom.get("grasp_latched", vision_debug.get("grasp_latched", False)))
         angle_valid = bool(geom.get("angle_valid", vision_debug.get("angle_valid", False)))
         plane_aux_valid = bool(geom.get("plane_aux_valid", vision_debug.get("plane_aux_valid", False)))
+        if geom and "grasp_base" in geom:
+            raw_grasp_base = np.asarray(geom["grasp_base"], dtype=float).reshape(3)
+            try:
+                effective_grasp_base = self._valve_grasp_point_base(geom)
+            except Exception:
+                effective_grasp_base = np.full(3, np.nan, dtype=float)
+            try:
+                ee_grasp_target_base = self._ee_grasp_target_base(geom)
+            except Exception:
+                ee_grasp_target_base = np.full(3, np.nan, dtype=float)
+            try:
+                hand_proxy_base = self._current_grasp_proxy_base(geom, robot_state_data)
+            except Exception:
+                hand_proxy_base = np.full(3, np.nan, dtype=float)
+        else:
+            raw_grasp_base = np.full(3, np.nan, dtype=float)
+            effective_grasp_base = np.full(3, np.nan, dtype=float)
+            ee_grasp_target_base = np.full(3, np.nan, dtype=float)
+            hand_proxy_base = np.full(3, np.nan, dtype=float)
+        grasp_base_is_effective = bool(geom.get("grasp_base_is_effective", False)) if geom else False
+        vision_grasp_point_semantics = _csv_token(
+            geom.get(
+                "vision_grasp_point_semantics",
+                vision_debug.get("vision_grasp_point_semantics", ""),
+            )
+        )
+        vision_use_grasp_R_base = bool(
+            geom.get(
+                "vision_use_grasp_R_base",
+                vision_debug.get("vision_use_grasp_R_base", False),
+            )
+        )
+        grasp_R_source = _csv_token(
+            geom.get("grasp_R_source", vision_debug.get("grasp_R_source", ""))
+        )
+        close_fail_reason = (
+            self._failure_reason
+            if self.task_state == self.FAILED and str(self._failure_reason).startswith("close")
+            else ""
+        )
+        close_latch_diag = self._close_latch_diagnostics if isinstance(self._close_latch_diagnostics, dict) else {}
+
+        def _diag_value(key, default=None):
+            if isinstance(geom, dict) and key in geom:
+                return geom[key]
+            return close_latch_diag.get(key, default)
+
+        def _diag_vec3(key):
+            value = _diag_value(key, None)
+            if value is None:
+                return np.full(3, np.nan, dtype=float)
+            try:
+                return np.asarray(value, dtype=float).reshape(3)
+            except Exception:
+                return np.full(3, np.nan, dtype=float)
+
+        def _diag_mat3(key):
+            value = _diag_value(key, None)
+            if value is None:
+                return np.full((3, 3), np.nan, dtype=float)
+            try:
+                return np.asarray(value, dtype=float).reshape(3, 3)
+            except Exception:
+                return np.full((3, 3), np.nan, dtype=float)
+
+        last_control_geometry_source = _csv_token(
+            _diag_value("last_control_geometry_source", self._last_control_geometry_source or "")
+        )
+        last_control_state = _csv_token(
+            _diag_value("last_control_state", self._last_control_state or "")
+        )
+        last_accepted_vision_control_age_s = float(
+            _diag_value(
+                "last_accepted_vision_control_age_s",
+                self._control_geom_age_s(self._last_accepted_vision_control_timestamp),
+            )
+        )
+        latched_from_last_accepted_vision_control_geom = bool(
+            _diag_value("latched_from_last_accepted_vision_control_geom", False)
+        )
+        latched_from_last_control_geom = bool(
+            _diag_value("latched_from_last_control_geom", False)
+        )
+        latched_from_current_geom = bool(
+            _diag_value("latched_from_current_geom", False)
+        )
+        close_latch_reason = _csv_token(_diag_value("close_latch_reason", ""))
+        vision_close_latch_frame = _csv_token(
+            _diag_value("vision_close_latch_frame", self.vision_close_latch_frame)
+        )
+        latched_geom_stale = bool(_diag_value("latched_geom_stale", False))
+        latched_geom_max_age_s = float(
+            _diag_value(
+                "latched_geom_max_age_s",
+                self.config.get("vision_latched_geom_max_age_s", 0.2),
+            )
+        )
+        latched_raw_grasp_base = _diag_vec3("latched_raw_grasp_base")
+        latched_effective_grasp_base = _diag_vec3("latched_effective_grasp_base")
+        latched_ee_target_base = _diag_vec3("latched_ee_target_base")
+        latched_grasp_R_base = _diag_mat3("latched_grasp_R_base")
+        gt_raw_grasp_base = _diag_vec3("gt_raw_grasp_base")
+        gt_effective_grasp_base = _diag_vec3("gt_effective_grasp_base")
+        gt_ee_target_base = _diag_vec3("gt_ee_target_base")
+        gt_grasp_R_base = _diag_mat3("gt_grasp_R_base")
+        delta_effective_grasp_vs_gt_m = float(
+            _diag_value("delta_effective_grasp_vs_gt_m", np.nan)
+        )
+        delta_ee_target_vs_gt_m = float(_diag_value("delta_ee_target_vs_gt_m", np.nan))
+        delta_grasp_R_vs_gt_deg = float(_diag_value("delta_grasp_R_vs_gt_deg", np.nan))
+        delta_effective_grasp_vec_base = _diag_vec3("delta_effective_grasp_vec_base")
+        delta_ee_target_vec_base = _diag_vec3("delta_ee_target_vec_base")
+        delta_effective_grasp_vec_grasp_frame = _diag_vec3("delta_effective_grasp_vec_grasp_frame")
+        delta_ee_target_vec_grasp_frame = _diag_vec3("delta_ee_target_vec_grasp_frame")
+        base_latch_delta_effective_grasp_vs_gt_m = float(
+            _diag_value("base_latch_delta_effective_grasp_vs_gt_m", np.nan)
+        )
+        base_latch_delta_ee_target_vs_gt_m = float(
+            _diag_value("base_latch_delta_ee_target_vs_gt_m", np.nan)
+        )
+        base_latch_delta_grasp_R_vs_gt_deg = float(
+            _diag_value("base_latch_delta_grasp_R_vs_gt_deg", np.nan)
+        )
+        world_latch_delta_effective_grasp_vs_gt_m = float(
+            _diag_value("world_latch_delta_effective_grasp_vs_gt_m", np.nan)
+        )
+        world_latch_delta_ee_target_vs_gt_m = float(
+            _diag_value("world_latch_delta_ee_target_vs_gt_m", np.nan)
+        )
+        world_latch_delta_grasp_R_vs_gt_deg = float(
+            _diag_value("world_latch_delta_grasp_R_vs_gt_deg", np.nan)
+        )
+        vision_close_latch_use_gt_grasp_R = bool(
+            _diag_value("vision_close_latch_use_gt_grasp_R", self.vision_close_latch_use_gt_grasp_R)
+        )
+        vision_close_latch_use_gt_position = bool(
+            _diag_value("vision_close_latch_use_gt_position", self.vision_close_latch_use_gt_position)
+        )
+        vision_close_latch_extra_offset_base = _diag_vec3("vision_close_latch_extra_offset_base")
+        vision_close_latch_extra_offset_grasp_frame = _diag_vec3(
+            "vision_close_latch_extra_offset_grasp_frame"
+        )
+        latched_grasp_R_flat = latched_grasp_R_base.reshape(-1)
+        gt_grasp_R_flat = gt_grasp_R_base.reshape(-1)
 
         t = 0.0 if self._test_start_t is None else time.perf_counter() - self._test_start_t
         with open(self.log_file, "a") as file:
@@ -3454,12 +5202,30 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"{t:.6f},{self.task_state},"
                 f"{self._current_target_base[0]:.6f},{self._current_target_base[1]:.6f},{self._current_target_base[2]:.6f},"
                 f"{current[0]:.6f},{current[1]:.6f},{current[2]:.6f},"
-                f"{error:.6f},{ik_error:.6f},{servo_error:.6f},{grasp_error:.6f},"
+                f"{error:.6f},{ee_error_components[0]:.6f},"
+                f"{ee_error_components[1]:.6f},{ee_error_components[2]:.6f},"
+                f"{ik_error:.6f},{servo_error:.6f},{grasp_error:.6f},"
                 f"{valve_angle:.6f},{valve_vel:.6f},"
                 f"{contact_count},{normal_force:.6f},{topo_code},"
                 f"{int(geom.get('real_contact_count', contact_count))},"
                 f"{float(geom.get('real_contact_normal_force', normal_force)):.6f},"
-                f"{real_topo_code},{int(success)},{int(attach_enabled)},"
+                f"{real_topo_code},"
+                f"{int(real_groups['palm'])},{int(real_groups['thumb'])},"
+                f"{int(real_groups['index'])},{int(real_groups['middle'])},"
+                f"{role_counts['palm']},{role_counts['thumb']},"
+                f"{role_counts['index']},{role_counts['middle']},"
+                f"{role_forces['palm']:.6f},{role_forces['thumb']:.6f},"
+                f"{role_forces['index']:.6f},{role_forces['middle']:.6f},"
+                f"{int(success)},{int(strict_grasp_success)},{int(functional_grasp_candidate)},"
+                f"{_csv_token(self.grasp_success_mode)},{_csv_token(self._close_exit_reason)},"
+                f"{_csv_token(functional_candidate_block_reason)},"
+                f"{functional_roles_count},{int(functional_topology_allowed)},"
+                f"{int(functional_force_ok)},{int(functional_close_progress_ok)},"
+                f"{int(functional_ee_error_ok)},{int(functional_force_upper_ok)},"
+                f"{functional_hold_elapsed:.6f},"
+                f"{int(self._functional_probe_started)},{int(self._functional_probe_success)},"
+                f"{probe_valve_delta_deg:.6f},{probe_slip_m:.6f},{probe_force_n:.6f},"
+                f"{probe_fail_reason},{int(attach_enabled)},"
                 f"{relative_slip:.6f},{close_slip:.6f},"
                 f"{relative_slip_components[0]:.6f},{relative_slip_components[1]:.6f},"
                 f"{relative_slip_components[2]:.6f},{relative_orientation_slip_deg:.6f},"
@@ -3470,14 +5236,55 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"{int(valve_hold_enabled)},{int(valve_lock_enabled)},{valve_hold_tau:.6f},"
                 f"{self.turn_target_deg:.6f},{turn_reference_delta:.6f},{turn_command_delta:.6f},"
                 f"{turn_actual_delta:.6f},{turn_angle_error:.6f},{turn_final_error:.6f},{turn_motion_radius:.6f},"
+                f"{_csv_token(turn_radius_mode)},{turn_radius_m:.6f},"
+                f"{actual_contact_radius_m:.6f},{target_contact_radius_m:.6f},{radius_error_m:.6f},"
                 f"{base_roll:.6f},{base_pitch:.6f},{base_yaw:.6f},"
                 f"{base_to_valve[0]:.6f},{base_to_valve[1]:.6f},{base_to_valve[2]:.6f},"
+                f"{base_pos_world[0]:.6f},{base_pos_world[1]:.6f},{base_pos_world[2]:.6f},"
+                f"{root_lin_vel_world[0]:.6f},{root_lin_vel_world[1]:.6f},{root_lin_vel_world[2]:.6f},"
+                f"{root_ang_vel_world[0]:.6f},{root_ang_vel_world[1]:.6f},{root_ang_vel_world[2]:.6f},"
+                f"{base_to_valve_center_dist_m:.6f},{base_to_valve_panel_axis_dist_m:.6f},"
+                f"{base_to_valve_dist_start_m:.6f},{base_to_valve_dist_min_m:.6f},"
+                f"{valve_axis_base[0]:.6f},{valve_axis_base[1]:.6f},{valve_axis_base[2]:.6f},"
+                f"{valve_radial_base[0]:.6f},{valve_radial_base[1]:.6f},{valve_radial_base[2]:.6f},"
+                f"{valve_tangent_base[0]:.6f},{valve_tangent_base[1]:.6f},{valve_tangent_base[2]:.6f},"
+                f"{valve_basis_axis_base[0]:.6f},{valve_basis_axis_base[1]:.6f},"
+                f"{valve_basis_axis_base[2]:.6f},"
+                f"{valve_basis_radial_base[0]:.6f},{valve_basis_radial_base[1]:.6f},"
+                f"{valve_basis_radial_base[2]:.6f},"
+                f"{valve_basis_tangent_base[0]:.6f},{valve_basis_tangent_base[1]:.6f},"
+                f"{valve_basis_tangent_base[2]:.6f},"
+                f"{_csv_token(contact_comp_frame)},"
+                f"{contact_comp_raw_base[0]:.6f},{contact_comp_raw_base[1]:.6f},"
+                f"{contact_comp_raw_base[2]:.6f},{contact_comp_raw_norm_m:.6f},"
+                f"{contact_comp_components[0]:.6f},{contact_comp_components[1]:.6f},"
+                f"{contact_comp_components[2]:.6f},"
+                f"{contact_comp_components_scaled[0]:.6f},{contact_comp_components_scaled[1]:.6f},"
+                f"{contact_comp_components_scaled[2]:.6f},"
+                f"{contact_comp_axis_scale:.6f},{contact_comp_radial_scale:.6f},"
+                f"{contact_comp_tangent_scale:.6f},"
+                f"{contact_comp_scaled_base[0]:.6f},{contact_comp_scaled_base[1]:.6f},"
+                f"{contact_comp_scaled_base[2]:.6f},"
+                f"{ee_target_before_comp_base[0]:.6f},{ee_target_before_comp_base[1]:.6f},"
+                f"{ee_target_before_comp_base[2]:.6f},"
+                f"{ee_target_after_comp_base[0]:.6f},{ee_target_after_comp_base[1]:.6f},"
+                f"{ee_target_after_comp_base[2]:.6f},"
+                f"{left_foot_pos_world[0]:.6f},{left_foot_pos_world[1]:.6f},{left_foot_pos_world[2]:.6f},"
+                f"{right_foot_pos_world[0]:.6f},{right_foot_pos_world[1]:.6f},{right_foot_pos_world[2]:.6f},"
+                f"{left_foot_disp:.6f},{right_foot_disp:.6f},{max_foot_disp:.6f},"
+                f"{_csv_token(self._foot_displacement_reference_state)},"
                 f"{left_foot_force:.6f},{right_foot_force:.6f},{int(feet_contact_stable)},"
                 f"{action_norm:.6f},"
                 f"{right_hand_state},"
                 f"{right_hand_q[0]:.6f},{right_hand_q[1]:.6f},{right_hand_q[2]:.6f},"
                 f"{right_hand_target_q[0]:.6f},{right_hand_target_q[1]:.6f},{right_hand_target_q[2]:.6f},"
                 f"{right_hand_torque[0]:.6f},{right_hand_torque[1]:.6f},{right_hand_torque[2]:.6f},"
+                f"{right_hand_q[3]:.6f},{right_hand_q[4]:.6f},"
+                f"{right_hand_q[5]:.6f},{right_hand_q[6]:.6f},"
+                f"{right_hand_target_q[3]:.6f},{right_hand_target_q[4]:.6f},"
+                f"{right_hand_target_q[5]:.6f},{right_hand_target_q[6]:.6f},"
+                f"{right_hand_torque[3]:.6f},{right_hand_torque[4]:.6f},"
+                f"{right_hand_torque[5]:.6f},{right_hand_torque[6]:.6f},"
                 f"{int(geom.get('right_hand_contact_hold_latched', False))},"
                 f"{float(geom.get('right_hand_close_progress_thumb', np.nan)):.6f},"
                 f"{float(geom.get('right_hand_close_progress_finger', np.nan)):.6f},"
@@ -3495,17 +5302,85 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 f"{contact_health_ratio:.6f},{int(soft_connect_active)},"
                 f"{soft_connect_active_ratio:.6f},"
                 f"{float(geom.get('real_contact_normal_force', normal_force)):.6f},"
-                f"{contact_force_peak_n:.6f},{int(angle_brake_enabled)},"
+                f"{contact_force_peak_n:.6f},"
+                f"{hand_valve_force_axis_n:.6f},{hand_valve_force_radial_n:.6f},"
+                f"{hand_valve_force_tangent_n:.6f},"
+                f"{hand_valve_force_axis_abs_n:.6f},{hand_valve_force_radial_abs_n:.6f},"
+                f"{hand_valve_force_tangent_abs_n:.6f},"
+                f"{abs_force_axis_over_tangent:.6f},{abs_force_radial_over_tangent:.6f},"
+                f"{real_hand_valve_force_axis_n:.6f},{real_hand_valve_force_radial_n:.6f},"
+                f"{real_hand_valve_force_tangent_n:.6f},"
+                f"{real_hand_valve_force_axis_abs_n:.6f},{real_hand_valve_force_radial_abs_n:.6f},"
+                f"{real_hand_valve_force_tangent_abs_n:.6f},"
+                f"{real_abs_force_axis_over_tangent:.6f},{real_abs_force_radial_over_tangent:.6f},"
+                f"{proxy_or_assist_force_axis_n:.6f},{proxy_or_assist_force_radial_n:.6f},"
+                f"{proxy_or_assist_force_tangent_n:.6f},"
+                f"{proxy_or_assist_force_axis_abs_n:.6f},{proxy_or_assist_force_radial_abs_n:.6f},"
+                f"{proxy_or_assist_force_tangent_abs_n:.6f},"
+                f"{proxy_or_assist_abs_force_axis_over_tangent:.6f},"
+                f"{proxy_or_assist_abs_force_radial_over_tangent:.6f},"
+                f"{int(angle_brake_enabled)},"
                 f"{angle_brake_torque:.6f},{angle_brake_peak_torque:.6f},"
                 f"{base_approach_m:.6f},{base_yaw_drift_deg:.6f},"
                 f"{base_tilt_deg:.6f},{max_base_tilt_deg:.6f},"
+                f"{raw_grasp_base[0]:.6f},{raw_grasp_base[1]:.6f},{raw_grasp_base[2]:.6f},"
+                f"{effective_grasp_base[0]:.6f},{effective_grasp_base[1]:.6f},{effective_grasp_base[2]:.6f},"
+                f"{ee_grasp_target_base[0]:.6f},{ee_grasp_target_base[1]:.6f},{ee_grasp_target_base[2]:.6f},"
+                f"{hand_proxy_base[0]:.6f},{hand_proxy_base[1]:.6f},{hand_proxy_base[2]:.6f},"
+                f"{int(grasp_base_is_effective)},{vision_grasp_point_semantics},"
+                f"{int(vision_use_grasp_R_base)},{grasp_R_source},"
                 f"{self.task_state},{geometry_source_used},{latched_geometry_source},"
+                f"{last_control_geometry_source},{last_control_state},"
+                f"{last_accepted_vision_control_age_s:.6f},"
+                f"{int(latched_from_last_accepted_vision_control_geom)},"
+                f"{int(latched_from_last_control_geom)},"
+                f"{int(latched_from_current_geom)},"
+                f"{close_latch_reason},{vision_close_latch_frame},"
+                f"{int(latched_geom_stale)},{latched_geom_max_age_s:.6f},"
                 f"{int(vision_used_for_control)},{vision_control_block_reason},"
                 f"{int(vision_quality_pass)},{int(vision_temporal_outlier)},"
                 f"{int(vision_smoothing_applied)},{int(vision_valid)},"
                 f"{int(pose_valid)},{int(grasp_valid)},{int(grasp_latched)},"
                 f"{int(angle_valid)},{int(plane_aux_valid)},"
-                f"{segment_result},{_csv_token(self._failure_reason)},"
+                f"{latched_raw_grasp_base[0]:.6f},{latched_raw_grasp_base[1]:.6f},{latched_raw_grasp_base[2]:.6f},"
+                f"{latched_effective_grasp_base[0]:.6f},{latched_effective_grasp_base[1]:.6f},{latched_effective_grasp_base[2]:.6f},"
+                f"{latched_ee_target_base[0]:.6f},{latched_ee_target_base[1]:.6f},{latched_ee_target_base[2]:.6f},"
+                f"{latched_grasp_R_flat[0]:.6f},{latched_grasp_R_flat[1]:.6f},{latched_grasp_R_flat[2]:.6f},"
+                f"{latched_grasp_R_flat[3]:.6f},{latched_grasp_R_flat[4]:.6f},{latched_grasp_R_flat[5]:.6f},"
+                f"{latched_grasp_R_flat[6]:.6f},{latched_grasp_R_flat[7]:.6f},{latched_grasp_R_flat[8]:.6f},"
+                f"{gt_raw_grasp_base[0]:.6f},{gt_raw_grasp_base[1]:.6f},{gt_raw_grasp_base[2]:.6f},"
+                f"{gt_effective_grasp_base[0]:.6f},{gt_effective_grasp_base[1]:.6f},{gt_effective_grasp_base[2]:.6f},"
+                f"{gt_ee_target_base[0]:.6f},{gt_ee_target_base[1]:.6f},{gt_ee_target_base[2]:.6f},"
+                f"{gt_grasp_R_flat[0]:.6f},{gt_grasp_R_flat[1]:.6f},{gt_grasp_R_flat[2]:.6f},"
+                f"{gt_grasp_R_flat[3]:.6f},{gt_grasp_R_flat[4]:.6f},{gt_grasp_R_flat[5]:.6f},"
+                f"{gt_grasp_R_flat[6]:.6f},{gt_grasp_R_flat[7]:.6f},{gt_grasp_R_flat[8]:.6f},"
+                f"{delta_effective_grasp_vs_gt_m:.6f},{delta_ee_target_vs_gt_m:.6f},"
+                f"{delta_grasp_R_vs_gt_deg:.6f},"
+                f"{delta_effective_grasp_vec_base[0]:.6f},{delta_effective_grasp_vec_base[1]:.6f},"
+                f"{delta_effective_grasp_vec_base[2]:.6f},"
+                f"{delta_ee_target_vec_base[0]:.6f},{delta_ee_target_vec_base[1]:.6f},"
+                f"{delta_ee_target_vec_base[2]:.6f},"
+                f"{delta_effective_grasp_vec_grasp_frame[0]:.6f},"
+                f"{delta_effective_grasp_vec_grasp_frame[1]:.6f},"
+                f"{delta_effective_grasp_vec_grasp_frame[2]:.6f},"
+                f"{delta_ee_target_vec_grasp_frame[0]:.6f},"
+                f"{delta_ee_target_vec_grasp_frame[1]:.6f},"
+                f"{delta_ee_target_vec_grasp_frame[2]:.6f},"
+                f"{base_latch_delta_effective_grasp_vs_gt_m:.6f},"
+                f"{base_latch_delta_ee_target_vs_gt_m:.6f},"
+                f"{base_latch_delta_grasp_R_vs_gt_deg:.6f},"
+                f"{world_latch_delta_effective_grasp_vs_gt_m:.6f},"
+                f"{world_latch_delta_ee_target_vs_gt_m:.6f},"
+                f"{world_latch_delta_grasp_R_vs_gt_deg:.6f},"
+                f"{int(vision_close_latch_use_gt_grasp_R)},"
+                f"{int(vision_close_latch_use_gt_position)},"
+                f"{vision_close_latch_extra_offset_base[0]:.6f},"
+                f"{vision_close_latch_extra_offset_base[1]:.6f},"
+                f"{vision_close_latch_extra_offset_base[2]:.6f},"
+                f"{vision_close_latch_extra_offset_grasp_frame[0]:.6f},"
+                f"{vision_close_latch_extra_offset_grasp_frame[1]:.6f},"
+                f"{vision_close_latch_extra_offset_grasp_frame[2]:.6f},"
+                f"{segment_result},{_csv_token(close_fail_reason)},{_csv_token(self._failure_reason)},"
                 f"{_csv_token(self._abort_reason)}\n"
             )
         self._write_grasp_marker_file(

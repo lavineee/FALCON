@@ -1,0 +1,4 @@
+vision_close_latch_use_gt_grasp_R: false
+vision_close_latch_use_gt_position: true
+vision_close_latch_extra_offset_base: [0.0, 0.0, 0.0]
+vision_close_latch_extra_offset_grasp_frame: [0.0, 0.0, 0.0]

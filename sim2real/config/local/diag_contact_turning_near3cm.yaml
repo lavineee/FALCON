@@ -1,7 +1,7 @@
 # 真实接触转阀门实验 overlay。
 # 需要在 grasp_contact overlay 之后加载：先真实接触抓住轮圈，再关闭角度锁并执行小角度闭环转动。
 
-ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact.xml"
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact_near3cm.xml"
 right_contact_grasp_proxy_site_name: "right_contact_grasp_palm_inner_site"
 disable_hand_finger_collision_for_tracking: false
 
@@ -88,14 +88,6 @@ valve_approach_proxy_compensation_max_m: 0.050
 # 只保留很小补偿，否则会沿阀门轴向过推并把已有接触挤丢。
 valve_contact_tracking_compensation_gain: 0.35
 valve_contact_tracking_compensation_max_m: 0.025
-valve_contact_tracking_compensation_enabled: true
-valve_contact_compensation_frame: "base"
-valve_contact_compensation_axis_scale: 1.0
-valve_contact_compensation_radial_scale: 1.0
-valve_contact_compensation_tangent_scale: 1.0
-valve_contact_compensation_axis_max_m: null
-valve_contact_compensation_radial_max_m: null
-valve_contact_compensation_tangent_max_m: null
 # 限制阀门任务中的右手目标点变化速度，减小上肢快速伸出对站姿/yaw 的扰动。
 valve_target_rate_limit_mps: 0.18
 

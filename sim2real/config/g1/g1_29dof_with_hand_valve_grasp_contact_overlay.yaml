@@ -24,6 +24,13 @@ vision_override_states:
 vision_use_quality_gate: true
 vision_log_control_source: true
 vision_close_latch_source: "current_control"
+vision_close_latch_frame: "world"          # world | base
+vision_close_latch_use_gt_grasp_R: false
+vision_close_latch_use_gt_position: false
+vision_close_latch_extra_offset_base: [0.0, 0.0, 0.0]
+vision_close_latch_extra_offset_grasp_frame: [0.0, 0.0, 0.0]
+vision_grasp_point_semantics: "raw_site"   # raw_site | effective
+vision_use_grasp_R_base: false
 vision_min_center_points: 200
 vision_min_spoke_points: 300
 vision_min_grasp_points: 50
@@ -35,7 +42,7 @@ vision_max_axis_jump_deg: 5.0
 vision_smoothing_enable: true
 vision_smoothing_alpha: 0.35
 vision_latch_last_valid_approach_geom: true
-vision_latched_geom_max_age_s: 2.0
+vision_latched_geom_max_age_s: 0.20
 vision_use_latched_after_approach: false
 vision_overlay_debug_file: "/tmp/falcon_valve_vision_overlay_debug.json"
 
@@ -120,6 +127,14 @@ valve_approach_tracking_compensation_gain: 0.8
 valve_approach_tracking_compensation_max_m: 0.055
 valve_approach_proxy_compensation_gain: 0.9
 valve_approach_proxy_compensation_max_m: 0.050
+valve_contact_tracking_compensation_enabled: true
+valve_contact_compensation_frame: "base"
+valve_contact_compensation_axis_scale: 1.0
+valve_contact_compensation_radial_scale: 1.0
+valve_contact_compensation_tangent_scale: 1.0
+valve_contact_compensation_axis_max_m: null
+valve_contact_compensation_radial_max_m: null
+valve_contact_compensation_tangent_max_m: null
 valve_target_rate_limit_mps: 0.18
 
 # 第一阶段只看能否稳定夹住，不主动转动。
@@ -197,12 +212,33 @@ right_hand_effort_limits: [2.2, 1.30, 1.30, 1.05, 1.05, 1.05, 1.05]
 
 valve_grasp_success_min_contacts: 4
 valve_grasp_success_min_force_n: 8.0
+valve_grasp_success_mode: "strict_topology"
 valve_grasp_success_require_thumb: true
 valve_grasp_success_require_finger: true
 valve_grasp_success_require_index: true
 valve_grasp_success_require_middle: true
 # 抓握成功和闭手触发都必须来自真实手部碰撞体接触，不能只靠隐藏 proxy 判定。
 valve_grasp_success_require_real_hand_contact: true
+functional_grasp_allowed_topologies:
+  - "PTIM"
+  - "PIM"
+  - "PIT"
+  - "PTM"
+  - "TIM"
+  - "P-IM"
+functional_grasp_min_contacts: 3
+functional_grasp_min_force_n: 7.0
+functional_grasp_min_contact_roles: 3
+functional_grasp_max_force_n: 80.0
+functional_grasp_max_ee_error_m: 0.08
+functional_grasp_max_slip_m: 0.08
+functional_grasp_min_close_progress: 0.58
+functional_grasp_hold_s: 0.08
+functional_probe_angle_deg: 3.0
+functional_probe_speed_deg: 3.0
+functional_probe_min_valve_response_deg: 1.0
+functional_probe_max_slip_m: 0.08
+functional_probe_max_force_n: 100.0
 valve_close_require_real_hand_contact: true
 valve_require_palm_contact_to_close: true
 valve_palm_close_min_force_n: 0.5

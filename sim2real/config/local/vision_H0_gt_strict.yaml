@@ -1,0 +1,2 @@
+valve_geometry_source: "gt"
+valve_grasp_success_mode: "strict_topology"

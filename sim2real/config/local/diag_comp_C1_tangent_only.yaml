@@ -89,9 +89,9 @@ valve_approach_proxy_compensation_max_m: 0.050
 valve_contact_tracking_compensation_gain: 0.35
 valve_contact_tracking_compensation_max_m: 0.025
 valve_contact_tracking_compensation_enabled: true
-valve_contact_compensation_frame: "base"
-valve_contact_compensation_axis_scale: 1.0
-valve_contact_compensation_radial_scale: 1.0
+valve_contact_compensation_frame: "valve"
+valve_contact_compensation_axis_scale: 0.0
+valve_contact_compensation_radial_scale: 0.0
 valve_contact_compensation_tangent_scale: 1.0
 valve_contact_compensation_axis_max_m: null
 valve_contact_compensation_radial_max_m: null

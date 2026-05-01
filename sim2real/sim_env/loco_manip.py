@@ -140,6 +140,30 @@ class LocoManipSimulator(BaseSimulator):
         self.right_hand_contact_body_names = set(
             config.get("right_hand_contact_body_names", [])
         )
+        self.left_foot_contact_site_names = tuple(
+            config.get(
+                "left_foot_contact_site_names",
+                [
+                    "left_foot_contact_1",
+                    "left_foot_contact_2",
+                    "left_foot_contact_3",
+                    "left_foot_contact_4",
+                ],
+            )
+        )
+        self.right_foot_contact_site_names = tuple(
+            config.get(
+                "right_foot_contact_site_names",
+                [
+                    "right_foot_contact_1",
+                    "right_foot_contact_2",
+                    "right_foot_contact_3",
+                    "right_foot_contact_4",
+                ],
+            )
+        )
+        self.left_foot_contact_site_ids = []
+        self.right_foot_contact_site_ids = []
 
         super().__init__(config)
 
@@ -296,6 +320,8 @@ class LocoManipSimulator(BaseSimulator):
 
         NUM_FEET_SENSORS = 8
         self.ffss_idx = len(self.mj_data.sensordata) - NUM_FEET_SENSORS * 3
+        self.left_foot_contact_site_ids = self._resolve_site_ids(self.left_foot_contact_site_names)
+        self.right_foot_contact_site_ids = self._resolve_site_ids(self.right_foot_contact_site_names)
         self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = False
         self.viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
 
@@ -707,10 +733,37 @@ class LocoManipSimulator(BaseSimulator):
             f"target={float(self.valve_angle_hold_target):.4f}"
         )
 
+    def _resolve_site_ids(self, site_names):
+        ids = []
+        for name in site_names:
+            site_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_SITE, str(name))
+            if site_id != -1:
+                ids.append(site_id)
+        return ids
+
     def _site_world(self, site_id):
         if site_id == -1:
             return None
         return np.array(self.mj_data.site_xpos[site_id], dtype=float).reshape(3)
+
+    def _site_centroid_world(self, site_ids):
+        points = []
+        for site_id in site_ids:
+            if site_id != -1:
+                points.append(np.array(self.mj_data.site_xpos[site_id], dtype=float).reshape(3))
+        if not points:
+            return None
+        return np.mean(np.vstack(points), axis=0)
+
+    def _root_velocity_world(self):
+        qvel = np.asarray(self.mj_data.qvel, dtype=float).reshape(-1)
+        lin = np.full(3, np.nan, dtype=float)
+        ang = np.full(3, np.nan, dtype=float)
+        if qvel.size >= 3:
+            lin = qvel[:3].copy()
+        if qvel.size >= 6:
+            ang = qvel[3:6].copy()
+        return lin, ang
 
     def _current_foot_contact_status(self):
         left_force = 0.0
@@ -786,6 +839,161 @@ class LocoManipSimulator(BaseSimulator):
                 else:
                     contact_pairs.append(f"{self._geom_label(geom2)}:{self._geom_label(geom1)}")
         return contact_count, normal_force, contact_pairs
+
+    def _right_hand_contact_role(self, geom_id):
+        label = self._geom_label(geom_id)
+        body_name = self._geom_body_name(geom_id)
+        token = f"{label}:{body_name}"
+        if "right_rubber_hand" in token or "right_hand_palm" in token or "right_grasp_proxy_palm" in token:
+            return "palm"
+        if "right_hand_thumb" in token or "right_grasp_proxy_thumb" in token:
+            return "thumb"
+        if "right_hand_index" in token or "right_grasp_proxy_index" in token:
+            return "index"
+        if "right_hand_middle" in token or "right_grasp_proxy_middle" in token:
+            return "middle"
+        return "other"
+
+    def _right_hand_valve_contact_role_summary(self, include_proxy=True):
+        counts = {"palm": 0, "thumb": 0, "index": 0, "middle": 0, "other": 0}
+        forces = {"palm": 0.0, "thumb": 0.0, "index": 0.0, "middle": 0.0, "other": 0.0}
+        for contact_id in range(int(self.mj_data.ncon)):
+            contact = self.mj_data.contact[contact_id]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            geom1_is_hand = self._is_right_hand_contact_geom(geom1)
+            geom2_is_hand = self._is_right_hand_contact_geom(geom2)
+            geom1_is_valve = self._is_valve_wheel_contact_geom(geom1)
+            geom2_is_valve = self._is_valve_wheel_contact_geom(geom2)
+            if not ((geom1_is_hand and geom2_is_valve) or (geom2_is_hand and geom1_is_valve)):
+                continue
+
+            hand_geom = geom1 if geom1_is_hand else geom2
+            if not include_proxy and self._geom_label(hand_geom).startswith("right_grasp_proxy_"):
+                continue
+
+            role = self._right_hand_contact_role(hand_geom)
+            counts[role] = counts.get(role, 0) + 1
+            force = np.zeros(6, dtype=float)
+            try:
+                mujoco.mj_contactForce(self.mj_model, self.mj_data, contact_id, force)
+                forces[role] = forces.get(role, 0.0) + max(0.0, float(force[0]))
+            except Exception:
+                pass
+        return counts, forces
+
+    def _valve_contact_basis_world(self):
+        axis = np.array([1.0, 0.0, 0.0], dtype=float)
+        if self.valve_wheel_body_id != -1:
+            wheel_xmat = np.array(self.mj_data.xmat[self.valve_wheel_body_id], dtype=float).reshape(3, 3)
+            axis = wheel_xmat[:, 0].copy()
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm > 1e-8:
+            axis = axis / axis_norm
+
+        center = self._site_world(self.valve_center_site_id)
+        grasp = self._site_world(self.valve_grasp_site_id)
+        radial = None
+        if center is not None and grasp is not None:
+            radial = grasp - center
+            radial = radial - np.dot(radial, axis) * axis
+            radial_norm = np.linalg.norm(radial)
+            if radial_norm > 1e-8:
+                radial = radial / radial_norm
+        if radial is None:
+            radial = np.array([0.0, 1.0, 0.0], dtype=float)
+
+        tangent = np.cross(axis, radial)
+        tangent_norm = np.linalg.norm(tangent)
+        if tangent_norm > 1e-8:
+            tangent = tangent / tangent_norm
+        else:
+            tangent = np.array([0.0, 0.0, 1.0], dtype=float)
+        return axis, radial, tangent
+
+    @staticmethod
+    def _empty_contact_force_bucket():
+        return {
+            "count": 0,
+            "normal_force": 0.0,
+            "force_world": np.zeros(3, dtype=float),
+            "axis": 0.0,
+            "radial": 0.0,
+            "tangent": 0.0,
+            "axis_abs": 0.0,
+            "radial_abs": 0.0,
+            "tangent_abs": 0.0,
+        }
+
+    def _right_hand_valve_contact_force_decomposition(self):
+        axis, radial, tangent = self._valve_contact_basis_world()
+        buckets = {
+            "total": self._empty_contact_force_bucket(),
+            "real": self._empty_contact_force_bucket(),
+            "proxy": self._empty_contact_force_bucket(),
+        }
+
+        for contact_id in range(int(self.mj_data.ncon)):
+            contact = self.mj_data.contact[contact_id]
+            geom1 = int(contact.geom1)
+            geom2 = int(contact.geom2)
+            geom1_is_hand = self._is_right_hand_contact_geom(geom1)
+            geom2_is_hand = self._is_right_hand_contact_geom(geom2)
+            geom1_is_valve = self._is_valve_wheel_contact_geom(geom1)
+            geom2_is_valve = self._is_valve_wheel_contact_geom(geom2)
+            if not ((geom1_is_hand and geom2_is_valve) or (geom2_is_hand and geom1_is_valve)):
+                continue
+
+            hand_geom = geom1 if geom1_is_hand else geom2
+            is_proxy = self._geom_label(hand_geom).startswith("right_grasp_proxy_")
+            force = np.zeros(6, dtype=float)
+            try:
+                mujoco.mj_contactForce(self.mj_model, self.mj_data, contact_id, force)
+                contact_frame = np.asarray(contact.frame, dtype=float).reshape(3, 3)
+                # MuJoCo stores contact-frame axes as world-frame rows. The
+                # returned force is contact-frame 6D force/torque; this is our
+                # best-effort force on the hand, with sign adjusted by geom order.
+                force_world_geom2 = contact_frame.T @ force[:3]
+                force_world_hand = force_world_geom2 if geom2_is_hand else -force_world_geom2
+                normal_force = max(0.0, float(force[0]))
+            except Exception:
+                force_world_hand = np.zeros(3, dtype=float)
+                normal_force = 0.0
+
+            for bucket_name in ("total", "proxy" if is_proxy else "real"):
+                bucket = buckets[bucket_name]
+                bucket["count"] += 1
+                bucket["normal_force"] += normal_force
+                bucket["force_world"] += force_world_hand
+                axis_force = float(np.dot(force_world_hand, axis))
+                radial_force = float(np.dot(force_world_hand, radial))
+                tangent_force = float(np.dot(force_world_hand, tangent))
+                bucket["axis"] += axis_force
+                bucket["radial"] += radial_force
+                bucket["tangent"] += tangent_force
+                bucket["axis_abs"] += abs(axis_force)
+                bucket["radial_abs"] += abs(radial_force)
+                bucket["tangent_abs"] += abs(tangent_force)
+
+        return buckets
+
+    @staticmethod
+    def _flatten_contact_force_bucket(prefix, bucket):
+        tangent_abs = float(bucket["tangent_abs"])
+        denom = max(tangent_abs, 1e-6)
+        return {
+            f"{prefix}_count": int(bucket["count"]),
+            f"{prefix}_normal_force": float(bucket["normal_force"]),
+            f"{prefix}_force_world": np.asarray(bucket["force_world"], dtype=float).reshape(3).tolist(),
+            f"{prefix}_force_axis": float(bucket["axis"]),
+            f"{prefix}_force_radial": float(bucket["radial"]),
+            f"{prefix}_force_tangent": float(bucket["tangent"]),
+            f"{prefix}_force_axis_abs": float(bucket["axis_abs"]),
+            f"{prefix}_force_radial_abs": float(bucket["radial_abs"]),
+            f"{prefix}_force_tangent_abs": tangent_abs,
+            f"{prefix}_force_axis_abs_over_tangent": float(bucket["axis_abs"]) / denom,
+            f"{prefix}_force_radial_abs_over_tangent": float(bucket["radial_abs"]) / denom,
+        }
 
     def _debug_contact_pairs(self):
         """记录和抓握相关的原始 MuJoCo 接触对，便于区分未接触和接触判据未命中。"""
@@ -1365,6 +1573,13 @@ class LocoManipSimulator(BaseSimulator):
         left_force, right_force, feet_contact_stable = self._current_foot_contact_status()
         base_pos = np.array(self.mj_data.xpos[self.base_id], dtype=float).reshape(3)
         base_xmat = np.array(self.mj_data.xmat[self.base_id], dtype=float).reshape(3, 3)
+        root_lin_vel, root_ang_vel = self._root_velocity_world()
+        left_foot_pos = self._site_centroid_world(self.left_foot_contact_site_ids)
+        right_foot_pos = self._site_centroid_world(self.right_foot_contact_site_ids)
+        if left_foot_pos is None:
+            left_foot_pos = np.full(3, np.nan, dtype=float)
+        if right_foot_pos is None:
+            right_foot_pos = np.full(3, np.nan, dtype=float)
 
         valve_angle = 0.0
         valve_vel = 0.0
@@ -1376,12 +1591,21 @@ class LocoManipSimulator(BaseSimulator):
         real_contact_count, real_contact_normal_force, real_contact_pairs = (
             self._right_hand_valve_contact_summary(include_proxy=False)
         )
+        contact_role_counts, contact_role_forces = self._right_hand_valve_contact_role_summary()
+        real_contact_role_counts, real_contact_role_forces = (
+            self._right_hand_valve_contact_role_summary(include_proxy=False)
+        )
+        contact_force_buckets = self._right_hand_valve_contact_force_decomposition()
 
         payload = {
             "timestamp": time.time(),
             "sim_time": float(self.t),
             "base_pos_world": base_pos.tolist(),
             "base_xmat_world": base_xmat.tolist(),
+            "root_lin_vel_world": root_lin_vel.tolist(),
+            "root_ang_vel_world": root_ang_vel.tolist(),
+            "left_foot_pos_world": left_foot_pos.tolist(),
+            "right_foot_pos_world": right_foot_pos.tolist(),
             "left_foot_force": left_force,
             "right_foot_force": right_force,
             "feet_contact_stable": feet_contact_stable,
@@ -1408,9 +1632,28 @@ class LocoManipSimulator(BaseSimulator):
             "right_hand_valve_real_contact_count": real_contact_count,
             "right_hand_valve_real_contact_normal_force": real_contact_normal_force,
             "right_hand_valve_real_contact_pairs": real_contact_pairs,
+            "right_hand_valve_contact_role_counts": contact_role_counts,
+            "right_hand_valve_contact_role_forces": contact_role_forces,
+            "right_hand_valve_real_contact_role_counts": real_contact_role_counts,
+            "right_hand_valve_real_contact_role_forces": real_contact_role_forces,
             "debug_ncon": int(self.mj_data.ncon),
             "debug_contact_pairs": self._debug_contact_pairs(),
         }
+        payload.update(
+            self._flatten_contact_force_bucket(
+                "right_hand_valve_contact", contact_force_buckets["total"]
+            )
+        )
+        payload.update(
+            self._flatten_contact_force_bucket(
+                "right_hand_valve_real_contact", contact_force_buckets["real"]
+            )
+        )
+        payload.update(
+            self._flatten_contact_force_bucket(
+                "right_hand_valve_proxy_contact", contact_force_buckets["proxy"]
+            )
+        )
         extra_payload_fn = getattr(self, "_sim_status_extra_payload", None)
         if callable(extra_payload_fn):
             try:

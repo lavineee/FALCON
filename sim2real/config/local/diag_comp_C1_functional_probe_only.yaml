@@ -1,0 +1,9 @@
+valve_grasp_success_mode: "functional_probe"
+
+functional_grasp_min_force_n: 8.0
+functional_grasp_min_close_progress: 0.58
+functional_grasp_hold_s: 0.08
+
+functional_probe_angle_deg: 3.0
+functional_probe_speed_deg: 3.0
+functional_probe_min_valve_response_deg: 1.0

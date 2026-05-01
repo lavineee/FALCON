@@ -1,0 +1,38 @@
+valve_vision_enable: true
+valve_vision_mode: "sim_depth_color_debug"
+valve_vision_camera_name: "head_camera"
+
+valve_geometry_source: "vision_overlay"
+vision_override_control: true
+vision_override_angle: false
+vision_close_latch_source: "current_control"
+vision_close_latch_frame: "world"
+vision_latched_geom_max_age_s: 0.30
+vision_use_latched_after_approach: false
+
+vision_override_states:
+  - "wait_task_pose"
+  - "move_pregrasp"
+  - "approach_grasp"
+
+vision_grasp_point_semantics: "raw_site"
+vision_use_grasp_R_base: false
+valve_grasp_success_mode: "functional_probe"
+
+functional_grasp_min_contacts: 3
+functional_grasp_min_force_n: 8.0
+functional_grasp_min_contact_roles: 3
+functional_grasp_max_force_n: 80.0
+functional_grasp_max_ee_error_m: 0.08
+functional_grasp_max_slip_m: 0.08
+functional_grasp_min_close_progress: 0.7
+functional_grasp_hold_s: 0.10
+
+functional_probe_angle_deg: 3.0
+functional_probe_speed_deg: 3.0
+functional_probe_min_valve_response_deg: 1.0
+functional_probe_max_slip_m: 0.08
+functional_probe_max_force_n: 100.0
+
+vision_status_file: "/tmp/falcon_valve_vision_status.json"
+vision_overlay_debug_file: "/tmp/falcon_valve_vision_overlay_debug.json"

@@ -88,7 +88,7 @@ valve_approach_proxy_compensation_max_m: 0.050
 # 只保留很小补偿，否则会沿阀门轴向过推并把已有接触挤丢。
 valve_contact_tracking_compensation_gain: 0.35
 valve_contact_tracking_compensation_max_m: 0.025
-valve_contact_tracking_compensation_enabled: true
+valve_contact_tracking_compensation_enabled: false
 valve_contact_compensation_frame: "base"
 valve_contact_compensation_axis_scale: 1.0
 valve_contact_compensation_radial_scale: 1.0

@@ -65,7 +65,7 @@ valve_angle_hold_enabled: false
 valve_angle_hold_kp: 35.0
 valve_angle_hold_kd: 15.0
 valve_angle_hold_torque_limit: 35.0
-valve_contact_assist_enabled: true
+valve_contact_assist_enabled: false
 valve_contact_assist_release_on_done: true
 valve_contact_assist_release_on_turn_hold: true
 # connect 辅助打开后，先保持阀门硬锁一小段时间，让几何残差由手臂目标慢慢吸收。
@@ -88,14 +88,6 @@ valve_approach_proxy_compensation_max_m: 0.050
 # 只保留很小补偿，否则会沿阀门轴向过推并把已有接触挤丢。
 valve_contact_tracking_compensation_gain: 0.35
 valve_contact_tracking_compensation_max_m: 0.025
-valve_contact_tracking_compensation_enabled: true
-valve_contact_compensation_frame: "base"
-valve_contact_compensation_axis_scale: 1.0
-valve_contact_compensation_radial_scale: 1.0
-valve_contact_compensation_tangent_scale: 1.0
-valve_contact_compensation_axis_max_m: null
-valve_contact_compensation_radial_max_m: null
-valve_contact_compensation_tangent_max_m: null
 # 限制阀门任务中的右手目标点变化速度，减小上肢快速伸出对站姿/yaw 的扰动。
 valve_target_rate_limit_mps: 0.18
 

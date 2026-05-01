@@ -1,0 +1,6 @@
+vision_close_latch_use_gt_grasp_R: false
+vision_close_latch_use_gt_position: false
+vision_close_latch_extra_offset_base: [0.0, 0.0, 0.0]
+# Diagnostic half-step back toward the F1d GT close-entry target:
+# F1d delta_ee_target_vec_grasp_frame ~= [-0.0008, +0.0053, -0.0069] m.
+vision_close_latch_extra_offset_grasp_frame: [0.0, -0.003, 0.003]

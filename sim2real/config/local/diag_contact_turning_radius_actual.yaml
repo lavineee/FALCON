@@ -46,7 +46,7 @@ valve_turn_pre_settle_max_s: 1.2
 valve_turn_pre_settle_max_abs_valve_vel: 0.20
 # 转动阶段按阀门真实抓点半径生成圆弧，优先保证角度跟踪含义清楚。
 # 接触/软连接已建立后，允许目标回到预设抓点圆周，避免缩放半径导致转角驱动力不足。
-valve_turn_radius_mode: "target"
+valve_turn_radius_mode: "actual"
 valve_turn_displacement_radius_gain: 1.0
 valve_turn_rotate_grasp_orientation: true
 valve_turn_contact_compensation_enabled: true
@@ -88,14 +88,6 @@ valve_approach_proxy_compensation_max_m: 0.050
 # 只保留很小补偿，否则会沿阀门轴向过推并把已有接触挤丢。
 valve_contact_tracking_compensation_gain: 0.35
 valve_contact_tracking_compensation_max_m: 0.025
-valve_contact_tracking_compensation_enabled: true
-valve_contact_compensation_frame: "base"
-valve_contact_compensation_axis_scale: 1.0
-valve_contact_compensation_radial_scale: 1.0
-valve_contact_compensation_tangent_scale: 1.0
-valve_contact_compensation_axis_max_m: null
-valve_contact_compensation_radial_max_m: null
-valve_contact_compensation_tangent_max_m: null
 # 限制阀门任务中的右手目标点变化速度，减小上肢快速伸出对站姿/yaw 的扰动。
 valve_target_rate_limit_mps: 0.18
 

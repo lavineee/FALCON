@@ -837,6 +837,175 @@ feature-valve-vision-module
 
 相关准备记录见 `docs/worklogs/vision_module_branch_prep_2026-05-01.md`。
 
+## 2026-05-01 阀门视觉与转动验证工作日志
+
+本日工作围绕“让视觉几何先安全接管 approach，并用阀门角度完成度而不是 MuJoCo 严格接触拓扑作为主任务指标”展开。默认 GT baseline 仍保持为保守路径；所有新策略都通过本地 overlay 或显式配置启用，不作为全局默认。
+
+### 已完成的接口和视觉链路
+
+- Provider 层加入 `valve_geometry_source: gt / vision_overlay_debug / vision_overlay`，默认仍为 `gt`，不包 overlay、不写 debug、不附加控制字段。
+- `vision_overlay_debug` 只做误差对比，返回控制器的仍是纯 GT geom；`vision_overlay` 只有在 `vision_override_control=true` 时才可能接管。
+- 新增 `vision_override_angle=false` 默认保护，视觉角度只进入 debug 字段，不覆盖 turn closed-loop 使用的 `valve_angle / valve_vel`。
+- 视觉抓点语义收敛为 `vision_grasp_point_semantics: raw_site`，让原控制器继续执行 `valve_grasp_radial_inset_m=0.026`；默认不使用视觉输出的 `grasp_R_base`，即 `vision_use_grasp_R_base=false`。
+- close latch 修正为冻结 approach 阶段最近一次实际用于控制的视觉 geom，并支持 `vision_close_latch_frame: world`，避免 base frame 过期导致 close-entry 几何漂移。
+- 仿真 RGB-D 彩色弱标识视觉模块已经能输出 `/tmp/falcon_valve_vision_status.json`，包含 `pose_valid / grasp_valid / grasp_latched / angle_valid / plane_aux_valid`。新增 `plane_aux` marker 后，连续 debug 中 pose/axis 稳定性明显提升。
+
+### 抓取判据和任务成功标准的收敛
+
+- `_grasp_success()` 语义保持不变，仍表示 MuJoCo 内部严格接触拓扑诊断，例如 `PTIM`。
+- 实验发现 vision-latched 几何下常出现 `-TIM`、`P-IM`、`PT--` 等非完整拓扑，但仍可能带动阀门转动；因此 strict PTIM 不再适合作为流程唯一阻塞条件。
+- 保留 `strict_grasp_success`、`contact_topology`、`real_contact_topology`、palm/thumb/index/middle force/count 作为 debug 字段。
+- 当前推荐实验评价改为 turn-validation：close 阶段负责闭手和建立接触，不再因 strict PTIM timeout 直接判死；最终任务成功由阀门实际角度误差和安全指标判断。
+- 本地 turn-validation overlay 使用：
+
+```yaml
+valve_enter_hold_on_close_timeout: true
+valve_turn_entry_require_success: false
+valve_turn_entry_min_contact_count: 1
+valve_turn_entry_min_contact_force_n: 1.0
+valve_turn_entry_max_contact_force_n: 200.0
+valve_turn_entry_max_slip_m: 0.30
+valve_turn_completion_require_grasp: false
+valve_turn_completion_min_contact_health_ratio: 0.0
+valve_turn_completion_timeout_is_failure: false
+valve_angle_success_tolerance_deg: 2.0
+```
+
+其中 `valve_turn_completion_max_slip_m: 0.0` 在当前代码中表示禁用 completion 阶段 slip 质量门控；turn 过程仍保留 `valve_turn_abort_slip_m` 等安全中止条件。
+
+### 接触力诊断和 contact compensation 结论
+
+- 对 GT baseline 做 contact-only / turn 诊断后确认：机器人转阀门时身体靠近面板、挪脚不是视觉问题；GT 下也存在明显 axis/radial 非切向接触力。
+- 旧的 base-frame 3D contact compensation 会把 axis/radial/tangent 误差一起硬补偿，是机器人被非切向力拖向阀门的重要来源。
+- 完全关闭 compensation 会导致转动失败，说明补偿本身仍有必要。
+- 当前最有用的实验配置是只保留阀门切向补偿：
+
+```yaml
+valve_contact_compensation_frame: "valve"
+valve_contact_compensation_axis_scale: 0.0
+valve_contact_compensation_radial_scale: 0.0
+valve_contact_compensation_tangent_scale: 1.0
+```
+
+这组配置显著降低 foot displacement 和 base-to-valve approach，同时仍能驱动阀门转动。它目前作为“contact-turning 推荐实验配置”，但尚未写入全局默认。
+
+### 今日关键短测结果
+
+GT geometry + turn-validation + tangent-only compensation，`+10 deg` 五次短测：
+
+- `entered_turn_rate = 5/5`
+- `angle_success_rate = 5/5`，成功定义为 `abs(final_valve_angle_deg - target_deg) <= 2 deg`
+- 平均 final angle error 约 `0.43 deg`，最大约 `0.89 deg`
+- 平均 foot displacement 约 `0.0086 m`，最大约 `0.0107 m`
+- 平均 base approach 约 `0.0154 m`，最大约 `0.0220 m`
+- run 03 / run 05 最终 `strict_grasp_success=0` 仍完成角度任务，说明 strict PTIM 应作为 debug 指标，而不是流程阻塞条件。
+
+Vision overlay approach + turn-validation + tangent-only compensation，`+10 deg` 五条有效 vision-latched 样本：
+
+- `entered_turn_rate = 5/5`
+- `angle_success_rate = 3/5`
+- 平均 final angle error 约 `1.74 deg`，最大约 `2.97 deg`
+- 平均 foot displacement 约 `0.0070 m`，最大约 `0.0138 m`
+- 平均 base approach 约 `0.0110 m`，最大约 `0.0184 m`
+- 平均 slip 约 `0.073 m`，最大约 `0.083 m`
+- `geometry_source_used` 分布包含 approach 阶段 `vision_overlay` 和 close/turn 阶段 `vision_latched`；`latched_geometry_source=vision_overlay`。
+- 另有一条样本因视觉质量门控失败全程 fallback 到 GT，不计入 vision-latched 统计；主要原因包括 `vision_invalid`、`bad_quality:plane_fit_error_m`、`bad_quality:spoke_num_points`。
+
+这说明当前主线已经基本闭合：视觉几何可以接管 approach，close 不再被 strict PTIM 卡死，tangent-only compensation 能降低非切向拖拽，任务主指标可以转向阀门角度完成度。剩余问题主要是 turn angle tracking / 接触驱动力一致性，而不是视觉接口、marker 或 strict grasp gate。
+
+### 今日遇到的问题和处理方法
+
+1. `vision_overlay_debug` 只能对比、不能影响控制。
+   - 问题：如果 debug 模式把视觉 `center/grasp/axis/grasp_R/wheel_xmat/valve_angle` 混入返回 geom，会悄悄改变控制器行为。
+   - 处理：`valve_geometry_source=gt` 仍直接走 `SimStatusGraspGeometryProvider`；`vision_overlay_debug` 只返回 GT geom 加不影响控制的 debug metadata；只有 `vision_overlay + vision_override_control=true` 才允许 overlay geom 进入控制。
+
+2. 视觉角度不能提前接管 turn closed-loop。
+   - 问题：彩色辐条角度还只是 debug 估计，直接覆盖 `valve_angle/valve_vel` 会污染 turn 反馈。
+   - 处理：加入 `vision_override_angle=false` 默认保护；视觉角度写入 `vision_valve_angle / vision_valve_vel / vision_angle_valid`，控制用角度仍来自 GT。
+
+3. green grasp marker 被右手遮挡后，pose/axis 估计会被拖垮。
+   - 问题：原始 plane fitting 依赖 center + spoke + grasp，close/pre-turn 阶段 grasp marker 被手遮挡，导致 `grasp_valid` 下降并影响平面法向。
+   - 处理：新增不参与抓取的 `plane_aux` 视觉贴片，把有效性拆成 `pose_valid / grasp_valid / angle_valid / plane_aux_valid`；plane fit 改为优先使用 center + spoke + plane_aux，grasp 可见时才参与。grasp 点支持 last-valid latch，只用于 debug status 连续性。
+
+4. plane_aux 贴片不能悬空，也不能和原有颜色冲突。
+   - 问题：最初新增的辅助贴片位置和粉色辐条前表面没有完全对齐，并且颜色可能与 MuJoCo 地面视觉上混淆。
+   - 处理：改成模仿粉色辐条的薄片式 marker，贴在相邻辐条片上，保持 visual-only，不改变质量、惯量、碰撞、摩擦或 weld/contact 行为；颜色选择高饱和且与已有 red/yellow/cyan/magenta/green 区分。
+
+5. vision approach 成功后，close latch 一度拿到 GT 而不是最后一帧 vision geom。
+   - 问题：`vision_close_latch_source=current_control` 如果在 close transition frame 重新读 provider，当前状态已经不允许实时 vision，于是 fallback 到 GT，导致 `latched_geometry_source=gt`，无法验证 vision-latched close。
+   - 处理：缓存 `_last_accepted_vision_control_geom`，close latch 优先冻结 approach 阶段最近一次真正用于控制的 vision geom，并记录 `latched_from_last_accepted_vision_control_geom`、`last_accepted_vision_control_age_s` 等字段。
+
+6. base-frame latch 会过期。
+   - 问题：机器人 base 在 approach/close 期间仍会移动，旧的 base-frame latched geom 到 close-entry 时可能与 GT effective grasp 相差接近 `9.5 cm`、姿态差约 `32 deg`。
+   - 处理：实现 `vision_close_latch_frame=world`。接受 vision geom 时同时保存 world-frame 几何，close latch 时用当前 `world_to_base` 转回 base frame。修正后 close-entry delta 收敛到毫米级和约 `3 deg`。
+
+7. vision grasp 点语义和 GT baseline 不一致。
+   - 问题：green marker 更接近原始 `right_hand_valve_site`，但 vision JSON 曾写 `grasp_base_is_effective=true`，导致 `_valve_grasp_point_base()` 跳过 `26 mm` radial inset，close 发生 `P-IM` 缺 thumb。
+   - 处理：加入 `vision_grasp_point_semantics: raw_site`，Provider 强制 `grasp_base_is_effective=false`，复用原控制器 radial inset 和 EE offset；默认 `vision_use_grasp_R_base=false`，姿态也由原 `_right_grasp_rotation_base()` 计算。
+
+8. strict PTIM close gate 过于敏感。
+   - 问题：vision-latched 几何已经能产生接触和力，但只要缺 palm/thumb/index/middle 中任一角色，就会 `close_stage_timeout`，拿不到后续“能不能实际转动阀门”的数据。
+   - 处理：先实现并测试 `functional_probe`，证明 `-TIM` 非严格拓扑也能小角度带动阀门；随后进一步收敛到 turn-validation：strict PTIM 保留为 debug，不再作为进入 turn 的唯一硬门槛。
+
+9. functional probe 候选条件一开始太保守。
+   - 问题：G2 中 `-TIM` 接触、force 约 `7.999 N`、close progress 约 `0.64`，但候选 gate 因 force/progress 边界没有启动 probe。
+   - 处理：将 allowed topology 和 block reason 显式日志化，放宽 functional 模式下的候选阈值；验证到 `-TIM` 可以通过 probe 并继续完成 `+10 deg`。后续不再把 probe 作为主流程，只保留这个结论支撑 turn-validation。
+
+10. 机器人转阀门时会被拖向面板、脚步移动。
+    - 问题：最初怀疑是视觉或 functional_probe，但 GT baseline contact-only 不主动转阀门时也出现 foot displacement 和很大的 axis/radial 非切向力。
+    - 处理：新增 foot displacement、base-to-valve distance、valve axis/radial/tangent basis、EE error 分解、hand-valve force 分解等日志。诊断确认旧 base-frame 3D contact compensation 是重要注入源。
+
+11. 不能简单关闭 compensation。
+    - 问题：`valve_contact_tracking_compensation_enabled=false` 虽然减少某些硬推目标，但转动容易失败，说明补偿仍是驱动接触转动的一部分。
+    - 处理：把 compensation 分解到 valve frame，只保留 tangent 分量，关闭 axis/radial 分量。C1 配置在 GT 下保持 `+10 deg` 角度任务可完成，同时显著降低 foot displacement 和 base approach。
+
+12. 近 3 cm / 近 5 cm 站位不是直接答案。
+    - 问题：让机器人相对阀门更近会改善可达性的直觉并不可靠；near3/near5 可能让 pre-turn force 上限更容易触发，身体更贴近面板。
+    - 处理：保持默认场景 XML 不变，只通过本地测试 XML/overlay 做对照；当前没有把近距离站位写成默认。
+
+13. `MUJOCO_GL=egl` 下 vision renderer 会失败。
+    - 问题：EGL 完整 run 中出现 `Failed to create MuJoCo valve vision renderer: Failed to make the EGL context current`，provider 读到 stale vision status 后全程 fallback GT，容易把 GT 结果误当 vision 结果。
+    - 处理：本机 vision overlay 验证改用 `MUJOCO_GL=glfw`；每条 run 后检查 CSV 中 `geometry_source_used` 和 `latched_geometry_source`，只有包含 `vision_overlay / vision_latched` 的样本才计入 vision-latched 统计。
+
+14. vision overlay turn-validation 还不是 5/5。
+    - 问题：有效 vision-latched 五条样本都进入 turn，但只有 `3/5` 达到 `±2 deg`；失败分别表现为 overshoot 到约 `12.41 deg` 和 under-turn 到约 `7.03 deg`。
+    - 处理：不再回头改 marker、PTIM 或 grasp_R；当前判断剩余瓶颈在 turn angle tracking / 接触驱动力一致性，需要后续围绕 closed-loop 参数、接触力、阀门阻尼/摩擦和切向目标生成继续分析。
+
+### 当前推荐实验入口
+
+本地 overlay 文件：
+
+- `config/local/turn_validation_no_strict_grasp.yaml`：关闭 strict grasp 对 close/turn entry/completion 的阻断，保留 strict topology 作为 debug。
+- `config/local/vision_turn_validation_approach.yaml`：启用 vision overlay approach，关闭 vision angle override。
+- `config/local/diag_comp_C1_tangent_only.yaml`：只保留阀门切向 contact compensation。
+
+运行 vision overlay + turn-validation 的示例：
+
+```bash
+cd /home/lavine/project/FALCON/sim2real
+MUJOCO_GL=glfw \
+PYTHON_BIN=/home/lavine/miniconda3/envs/fcreal/bin/python \
+RUN_ID=vision_turn_validation_glfw_10deg_01 \
+DURATION_SEC=80 \
+VALVE_TURN_TARGET_SEQUENCE_DEG=10 \
+VALVE_TURN_SPEED_DEG=5 \
+CONTACT_TURNING_OVERLAY_CONFIG=config/local/diag_comp_C1_tangent_only.yaml:config/local/turn_validation_no_strict_grasp.yaml:config/local/vision_turn_validation_approach.yaml \
+LOG_FILE=/tmp/falcon_valve_vision_turn_validation_glfw_10deg_01.csv \
+MARKER_FILE=/tmp/falcon_valve_vision_turn_validation_glfw_10deg_01_markers.json \
+SIM_STATUS_FILE=/tmp/falcon_valve_vision_turn_validation_glfw_10deg_01_status.json \
+SIM_CONTROL_FILE=/tmp/falcon_valve_vision_turn_validation_glfw_10deg_01_control.json \
+timeout 150s bash launch_valve_contact_turning_7dof_with_hand_auto.sh auto
+```
+
+注意：当前机器上 `MUJOCO_GL=egl` 下 vision renderer 曾出现 EGL context 创建失败，导致 provider 读到 stale vision status 并 fallback 到 GT。进行 vision overlay 验证时应优先使用 `MUJOCO_GL=glfw`，并检查 CSV 中 `geometry_source_used` 是否包含 `vision_overlay / vision_latched`。
+
+### 下一步建议
+
+- 不再优先追 `PTIM`、thumb contact 或 functional probe；这些保留为诊断标签。
+- 优先分析 vision-latched 样本中 overshoot / under-turn 的原因：turn closed-loop 参数、接触驱动力、阀门阻尼/摩擦、角度保持和切向目标生成。
+- 继续把最终阀门角度误差、接触力、slip、EE error、foot displacement、base approach 作为任务质量指标。
+- 在考虑实机或真实相机前，保持 `vision_override_angle=false`；视觉角度仍只做 debug 对比。
+
 ## 相关文档
 
 - `WORKLOG_ee_tracking_with_hand.md`：本阶段末端跟踪和带手模型工作的中文记录。
