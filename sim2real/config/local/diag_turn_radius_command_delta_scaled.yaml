@@ -1,0 +1,6 @@
+# Local diagnostic overlay: generate relative tangential displacement from the
+# established command/contact point instead of pulling the hand back to the
+# absolute target-site circle.
+
+valve_turn_radius_mode: "command_delta_scaled"
+valve_turn_displacement_radius_gain: 1.0

@@ -1,0 +1,15 @@
+# Fill this file after collecting T_camera_tag samples on the G1 ROS host.
+# sample_id should match the sample_id saved by calib_collect_tag_pose_ros1.py.
+samples:
+  - sample_id: 0
+    T_base_tag:
+      translation_m: [0.70, 0.00, 0.90]
+      rotation_matrix:
+        - [1.0, 0.0, 0.0]
+        - [0.0, 1.0, 0.0]
+        - [0.0, 0.0, 1.0]
+  - sample_id: 1
+    T_base_tag:
+      translation_m: [0.70, 0.10, 0.90]
+      rotation_rpy_deg: [0.0, 0.0, 0.0]
+

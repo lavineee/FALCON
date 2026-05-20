@@ -1,0 +1,6 @@
+# Local diagnostic overlay: exit immediately after reaching turn target.
+# Purpose: isolate whether large foot/base drift at 30 deg is caused by
+# turn_hold / done post-turn holding rather than the active turn trajectory.
+
+valve_turn_hold_s: 0.0
+valve_stop_after_done_s: 0.0

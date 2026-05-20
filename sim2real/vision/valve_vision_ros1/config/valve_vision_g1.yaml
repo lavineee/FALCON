@@ -1,0 +1,38 @@
+# G1 head D435I marker-based valve vision config.
+# Run this on 192.168.123.164 inside the ROS1 Noetic environment.
+
+topics:
+  color: "/camera/color/image_raw"
+  depth: "/camera/aligned_depth_to_color/image_raw"
+  camera_info: "/camera/color/camera_info"
+
+transport:
+  udp_host: "192.168.123.222"   # Control PC IP on the G1 network.
+  udp_port: 5055
+
+publish_hz: 15.0
+publish_invalid: true
+depth_scale_m: 0.001
+use_depth_center: false
+max_depth_age_s: 0.20
+
+marker:
+  dictionary: "DICT_4X4_50"
+  id: 0
+  size_m: 0.0765
+  # Marker frame offsets. For phase 1, attach the marker rigidly to the valve
+  # and encode the valve center/grasp point relative to the marker frame.
+  center_offset_marker_m: [0.0, 0.0, 0.0]
+  grasp_offset_marker_m: [0.0, -0.10, 0.0]
+  axis_marker: [0.0, 0.0, 1.0]
+
+T_base_camera:
+  # Rough calibration from one visible vertical ArUco tag on G1.
+  # RealSense optical frame is x right, y down, z front.
+  # Assumptions: robot in init pose, base height ~=0.75m, tag center measured
+  # at base [0.432, 0.0, 0.564 - 0.75] m, marker +z faces the robot.
+  translation_m: [0.065556607, 0.037311661, 0.454167315]
+  rotation_matrix:
+    - [0.032664000, -0.981054000, 0.190960000]
+    - [-0.997941000, -0.042566000, -0.047983000]
+    - [0.055203000, -0.189000000, -0.980424000]

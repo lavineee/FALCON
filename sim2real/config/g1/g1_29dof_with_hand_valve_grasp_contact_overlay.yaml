@@ -11,6 +11,22 @@ right_contact_grasp_proxy_site_name: "right_contact_grasp_palm_inner_site"
 
 # Geometry provider source. The default preserves the current MuJoCo GT baseline.
 valve_geometry_source: "gt"
+
+# Hand backend. Keep mock as the default so MuJoCo continues to use the existing
+# fake-hand/sim_control_file path. Real G1 right-hand RH56DF3 deployment switches
+# this to inspire_dds and publishes only rt/inspire/cmd; serial bridging stays in
+# DFX_inspire_service or the standalone inspire_h1 process.
+hand_backend: "mock"                  # mock | inspire_dds
+inspire_hand_side: "right"            # current deployment assumes right hand only
+inspire_open_raw: [900, 900, 900, 900, 900, 600]
+inspire_close_raw: [350, 350, 350, 350, 420, 600]
+inspire_publish_rate_hz: 20
+inspire_publish_duration_sec: 1.0
+inspire_dds_channel: 0                # real G1 default; IsaacLab can use 1 later
+inspire_network_interface: null       # set to the robot network interface if needed
+inspire_cmd_topic: "rt/inspire/cmd"
+inspire_initialize_channel_factory: false
+
 vision_status_file: "/tmp/falcon_valve_vision_status.json"
 vision_timeout_s: 0.5
 vision_fallback_to_gt: true

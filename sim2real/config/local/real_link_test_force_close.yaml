@@ -1,0 +1,10 @@
+# Real-hardware link test only: after a short safe approach, close the hand
+# even when there is no physical valve contact. Use only with an overridden
+# air-grasp target.
+
+valve_approach_max_s: 5.0
+valve_close_wait_s: 0.8
+valve_close_max_s: 1.5
+valve_enter_hold_on_close_timeout: true
+valve_hold_s: 2.0
+valve_stop_after_done_s: 1.0

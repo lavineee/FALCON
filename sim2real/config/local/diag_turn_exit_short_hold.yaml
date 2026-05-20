@@ -1,0 +1,6 @@
+# Local diagnostic overlay: short post-turn hold.
+# Purpose: allow a brief residual valve response near the target while avoiding
+# the long turn_hold/done hand target holding that pulls the robot toward the panel.
+
+valve_turn_hold_s: 0.30
+valve_stop_after_done_s: 0.0

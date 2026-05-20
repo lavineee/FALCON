@@ -1,0 +1,5 @@
+# Local diagnostic overlay: moderate turn segment tolerance for segmented
+# large-angle tests. This sits between the default 1.2 deg and the too-strict
+# 0.6 deg setting that caused extra dragging in the second segment.
+
+valve_turn_tolerance_deg: 0.9

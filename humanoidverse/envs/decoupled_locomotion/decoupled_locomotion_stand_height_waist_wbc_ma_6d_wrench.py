@@ -84,6 +84,9 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
         if str(self.wrench_cfg.get("curriculum_mode", "adaptive")) == "fixed":
             force_scale_initial = float(self.wrench_cfg.get("fixed_force_scale", force_scale_initial))
             torque_scale_initial = float(self.wrench_cfg.get("fixed_torque_scale", torque_scale_initial))
+        if bool(self.wrench_cfg.get("warm_start_torque_finetune", False)):
+            force_scale_initial = float(self.wrench_cfg.get("warm_start_force_scale_fixed", force_scale_initial))
+            torque_scale_initial = float(self.wrench_cfg.get("warm_start_torque_scale_initial", 0.0))
         self.apply_force_scale = (
             torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device) * force_scale_initial
         )
@@ -131,6 +134,15 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
         self.left_ee_apply_torque = torch.zeros((self.num_envs, 3), device=self.device)
         self.right_ee_apply_torque = torch.zeros((self.num_envs, 3), device=self.device)
 
+        self.per_env_mode_mixture_cfg = self.wrench_cfg.get("per_env_mode_mixture", {})
+        self.per_env_mode_mixture_enabled = bool(self.per_env_mode_mixture_cfg.get("enabled", False))
+        self.env_wrench_mode_ids = torch.full(
+            (self.num_envs,),
+            self.WRENCH_MODES[self.wrench_mode],
+            dtype=torch.long,
+            device=self.device,
+        )
+
         self.apply_force_tensor = torch.zeros(
             self.num_envs, self.config.robot.num_bodies, 3, dtype=torch.float, device=self.device, requires_grad=False
         )
@@ -170,6 +182,8 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
         self.apply_in_physics_step = bool(self.wrench_cfg.get("apply_in_physics_step", True))
 
         self.wrench_scale_down = torch.ones((self.num_envs, 2), dtype=torch.float, device=self.device)
+        self._reset_curriculum_log_tensors()
+        self._resample_wrench_modes(torch.arange(self.num_envs, device=self.device))
         self._resample_wrench_targets(torch.arange(self.num_envs, device=self.device))
         self._zero_wrench_if_disabled()
 
@@ -192,23 +206,62 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
         return torch.tensor(prob, dtype=torch.float, device=self.device).view(1, 3)
 
     def _force_mode_enabled(self):
-        return self.wrench_enabled and self.wrench_mode in ("force_only", "force_torque")
+        return bool(torch.any(self._force_mode_mask() > 0.0).item())
 
     def _torque_mode_enabled(self):
-        return self.wrench_enabled and self.wrench_mode in ("torque_only", "force_torque")
+        return bool(torch.any(self._torque_mode_mask() > 0.0).item())
 
-    def _zero_wrench_if_disabled(self):
-        if not self.wrench_enabled or self.wrench_mode == "none":
-            self.left_target_force.zero_()
-            self.right_target_force.zero_()
-            self.left_target_torque.zero_()
-            self.right_target_torque.zero_()
-        elif self.wrench_mode == "force_only":
-            self.left_target_torque.zero_()
-            self.right_target_torque.zero_()
-        elif self.wrench_mode == "torque_only":
-            self.left_target_force.zero_()
-            self.right_target_force.zero_()
+    def _force_mode_mask(self, env_ids=None):
+        if not self.wrench_enabled:
+            size = self.num_envs if env_ids is None else len(env_ids)
+            return torch.zeros((size, 1), dtype=torch.float, device=self.device)
+        mode_ids = self.env_wrench_mode_ids if env_ids is None else self.env_wrench_mode_ids[env_ids]
+        enabled = (mode_ids == self.WRENCH_MODES["force_only"]) | (mode_ids == self.WRENCH_MODES["force_torque"])
+        return enabled.float().view(-1, 1)
+
+    def _torque_mode_mask(self, env_ids=None):
+        if not self.wrench_enabled:
+            size = self.num_envs if env_ids is None else len(env_ids)
+            return torch.zeros((size, 1), dtype=torch.float, device=self.device)
+        mode_ids = self.env_wrench_mode_ids if env_ids is None else self.env_wrench_mode_ids[env_ids]
+        enabled = (mode_ids == self.WRENCH_MODES["torque_only"]) | (mode_ids == self.WRENCH_MODES["force_torque"])
+        return enabled.float().view(-1, 1)
+
+    def _resample_wrench_modes(self, env_ids):
+        if len(env_ids) == 0:
+            return
+        if not self.per_env_mode_mixture_enabled:
+            self.env_wrench_mode_ids[env_ids] = self.WRENCH_MODES[self.wrench_mode]
+            return
+
+        probs_cfg = self.per_env_mode_mixture_cfg.get("probabilities", {})
+        probs = torch.tensor(
+            [
+                float(probs_cfg.get("none", 0.10)),
+                float(probs_cfg.get("force_only", 0.35)),
+                float(probs_cfg.get("torque_only", 0.25)),
+                float(probs_cfg.get("force_torque", 0.30)),
+            ],
+            dtype=torch.float,
+            device=self.device,
+        )
+        probs = probs / probs.sum().clamp_min(1.0e-6)
+        sampled = torch.multinomial(probs, len(env_ids), replacement=True)
+        self.env_wrench_mode_ids[env_ids] = sampled
+
+    def _zero_wrench_if_disabled(self, env_ids=None):
+        force_mask = self._force_mode_mask(env_ids)
+        torque_mask = self._torque_mode_mask(env_ids)
+        if env_ids is None:
+            self.left_target_force *= force_mask
+            self.right_target_force *= force_mask
+            self.left_target_torque *= torque_mask
+            self.right_target_torque *= torque_mask
+        else:
+            self.left_target_force[env_ids] *= force_mask
+            self.right_target_force[env_ids] *= force_mask
+            self.left_target_torque[env_ids] *= torque_mask
+            self.right_target_torque[env_ids] *= torque_mask
 
     def _sample_vec(self, low, high, zero_prob, env_ids):
         values = low[env_ids] + (high[env_ids] - low[env_ids]) * torch.rand((len(env_ids), 3), device=self.device)
@@ -237,7 +290,7 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
             device=self.device,
         )
         self.wrench_resample_step[env_ids] = 0
-        self._zero_wrench_if_disabled()
+        self._zero_wrench_if_disabled(env_ids)
 
     def _maybe_resample_wrench_targets(self):
         if not bool(self.wrench_cfg.get("piecewise_constant", True)):
@@ -257,14 +310,14 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
 
     def _update_effective_scales(self):
         if self._force_mode_enabled():
-            force_scale = self.apply_force_scale
+            force_scale = self.apply_force_scale * self._force_mode_mask()
         else:
             force_scale = torch.zeros_like(self.apply_force_scale)
 
         if self._torque_mode_enabled():
             start_force_scale = float(self.wrench_cfg.get("torque_scale_start_after_force_scale", 0.0))
             torque_gate = (self.apply_force_scale >= start_force_scale).float()
-            torque_scale = self.apply_torque_scale * torque_gate
+            torque_scale = self.apply_torque_scale * torque_gate * self._torque_mode_mask()
         else:
             torque_scale = torch.zeros_like(self.apply_torque_scale)
 
@@ -274,24 +327,13 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
     def _calculate_ee_wrenches(self):
         self._maybe_resample_wrench_targets()
         force_scale, torque_scale = self._update_effective_scales()
-        force_enabled = self._force_mode_enabled()
-        torque_enabled = self._torque_mode_enabled()
+        force_mask = self._force_mode_mask()
+        torque_mask = self._torque_mode_mask()
 
         left_force = self._target_to_env_frame(self.left_target_force, self.left_hand_link_index) * force_scale
         right_force = self._target_to_env_frame(self.right_target_force, self.right_hand_link_index) * force_scale
         left_torque = self._target_to_env_frame(self.left_target_torque, self.left_hand_link_index) * torque_scale
         right_torque = self._target_to_env_frame(self.right_target_torque, self.right_hand_link_index) * torque_scale
-
-        if not force_enabled:
-            left_force.zero_()
-            right_force.zero_()
-            self.filtered_left_force.zero_()
-            self.filtered_right_force.zero_()
-        if not torque_enabled:
-            left_torque.zero_()
-            right_torque.zero_()
-            self.filtered_left_torque.zero_()
-            self.filtered_right_torque.zero_()
 
         if self.use_final_wrench_lpf:
             left_force = self.lpf_alpha * left_force + (1.0 - self.lpf_alpha) * self.filtered_left_force
@@ -299,12 +341,10 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
             left_torque = self.lpf_alpha * left_torque + (1.0 - self.lpf_alpha) * self.filtered_left_torque
             right_torque = self.lpf_alpha * right_torque + (1.0 - self.lpf_alpha) * self.filtered_right_torque
 
-        if not force_enabled:
-            left_force.zero_()
-            right_force.zero_()
-        if not torque_enabled:
-            left_torque.zero_()
-            right_torque.zero_()
+        left_force *= force_mask
+        right_force *= force_mask
+        left_torque *= torque_mask
+        right_torque *= torque_mask
 
         left_force, left_torque, left_scale = self._limit_wrench_by_joint_margin(
             left_force,
@@ -443,6 +483,7 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
 
         self.upper_body_dofs_tracking_reward[env_ids] *= 0.0
         self._reset_filtered_wrenches(env_ids)
+        self._resample_wrench_modes(env_ids)
         self._resample_wrench_targets(env_ids)
 
         self.extras["episode"] = {}
@@ -463,11 +504,16 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
             self.apply_torque_scale[env_ids] = float(
                 self.wrench_cfg.get("fixed_torque_scale", self.wrench_cfg.get("torque_scale_initial", 0.05))
             )
+            self._set_fixed_curriculum_log_tensors(env_ids)
+            return
+        if curriculum_mode == "quality_adaptive":
+            self._update_quality_adaptive_wrench_scale_curriculum(env_ids)
             return
         if curriculum_mode not in ("adaptive", "adaptive_floor"):
             raise ValueError(
-                f"Unsupported wrench.curriculum_mode={curriculum_mode}. Expected adaptive, adaptive_floor, or fixed."
+                f"Unsupported wrench.curriculum_mode={curriculum_mode}. Expected adaptive, adaptive_floor, quality_adaptive, or fixed."
             )
+        self._reset_curriculum_log_tensors()
 
         current_iteration = self._get_wrench_curriculum_iteration()
         force_warmup_iterations = int(self.wrench_cfg.get("force_curriculum_warmup_iterations", 0))
@@ -554,6 +600,239 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
                 float(self.wrench_cfg.get("torque_scale_max", 1.0)),
             )
 
+    def _reset_curriculum_log_tensors(self):
+        zero = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        one = torch.tensor(1.0, dtype=torch.float, device=self.device)
+        self.curriculum_force_up_fraction = zero.clone()
+        self.curriculum_force_down_fraction = zero.clone()
+        self.curriculum_force_hold_fraction = one.clone()
+        self.curriculum_torque_up_fraction = zero.clone()
+        self.curriculum_torque_down_fraction = zero.clone()
+        self.curriculum_torque_hold_fraction = one.clone()
+        self.curriculum_bad_quality_fraction = zero.clone()
+        self.curriculum_bad_upper_tracking_fraction = zero.clone()
+        self.curriculum_bad_episode_length_fraction = zero.clone()
+        self.curriculum_bad_base_height_fraction = zero.clone()
+        self.curriculum_bad_lin_vel_y_fraction = zero.clone()
+        self.curriculum_bad_torque_saturation_fraction = zero.clone()
+        self.curriculum_bad_action_clip_fraction = zero.clone()
+
+    def _set_fixed_curriculum_log_tensors(self, env_ids):
+        self._reset_curriculum_log_tensors()
+        if len(env_ids) > 0:
+            self.curriculum_force_hold_fraction = torch.tensor(1.0, dtype=torch.float, device=self.device)
+            self.curriculum_torque_hold_fraction = torch.tensor(1.0, dtype=torch.float, device=self.device)
+
+    def _wrench_quality_metrics(self, env_ids, up_threshold, down_threshold):
+        episode_len = self.episode_length_buf[env_ids].float()
+        denom = episode_len.clamp_min(1.0)
+        upper_tracking = self.upper_body_dofs_tracking_reward[env_ids] / denom
+
+        base_height_error = torch.abs(self.commands[env_ids, 8] - self.simulator.robot_root_states[env_ids, 2])
+        base_height_tracking = torch.exp(-base_height_error / self.config.rewards.reward_tracking_sigma.base_height)
+
+        lin_vel_y_error = torch.square(self.commands[env_ids, 1] - self.base_lin_vel[env_ids, 1])
+        lin_vel_y_tracking = torch.exp(-lin_vel_y_error / self.config.rewards.reward_tracking_sigma.lin_vel)
+
+        upper_torque = torch.abs(self.torques[env_ids][:, self.upper_dof_indices])
+        upper_limit = self.torque_limits[self.upper_dof_indices].view(1, -1).clamp_min(1.0e-6)
+        upper_ratio = upper_torque / upper_limit
+        torque_saturation_ratio = (upper_ratio > self.joint_limit_margin).float().mean(dim=1)
+
+        clip_action_limit = float(self.config.robot.control.action_clip_value)
+        action_clip_ratio = (torch.abs(self.actions[env_ids]) >= clip_action_limit * 0.999).float().mean(dim=1)
+
+        upper_good = float(self.wrench_cfg.get("quality_upper_tracking_good_threshold", 0.70))
+        upper_bad = float(self.wrench_cfg.get("quality_upper_tracking_bad_threshold", 0.50))
+        base_good = float(self.wrench_cfg.get("quality_base_height_good_threshold", 0.70))
+        base_bad = float(self.wrench_cfg.get("quality_base_height_bad_threshold", 0.50))
+        lin_y_good = float(self.wrench_cfg.get("quality_lin_vel_y_good_threshold", 0.60))
+        lin_y_bad = float(self.wrench_cfg.get("quality_lin_vel_y_bad_threshold", 0.40))
+        torque_sat_good = float(self.wrench_cfg.get("quality_torque_saturation_good_max", 0.04))
+        torque_sat_bad = float(self.wrench_cfg.get("quality_torque_saturation_bad_max", 0.08))
+        action_clip_good = float(self.wrench_cfg.get("quality_action_clip_good_max", 0.01))
+        action_clip_bad = float(self.wrench_cfg.get("quality_action_clip_bad_max", 0.05))
+
+        bad_episode_length = episode_len < down_threshold
+        good_episode_length = episode_len > up_threshold
+        bad_upper_tracking = upper_tracking < upper_bad
+        bad_base_height = base_height_tracking < base_bad
+        bad_lin_vel_y = lin_vel_y_tracking < lin_y_bad
+        bad_torque_saturation = torque_saturation_ratio > torque_sat_bad
+        bad_action_clip = action_clip_ratio > action_clip_bad
+
+        good_quality = (
+            (upper_tracking >= upper_good)
+            & (base_height_tracking >= base_good)
+            & (lin_vel_y_tracking >= lin_y_good)
+            & (torque_saturation_ratio <= torque_sat_good)
+            & (action_clip_ratio <= action_clip_good)
+        )
+        bad_quality = (
+            bad_upper_tracking
+            | bad_base_height
+            | bad_lin_vel_y
+            | bad_torque_saturation
+            | bad_action_clip
+        )
+
+        return {
+            "good_episode_length": good_episode_length,
+            "bad_episode_length": bad_episode_length,
+            "good_quality": good_quality,
+            "bad_quality": bad_quality,
+            "bad_upper_tracking": bad_upper_tracking,
+            "bad_base_height": bad_base_height,
+            "bad_lin_vel_y": bad_lin_vel_y,
+            "bad_torque_saturation": bad_torque_saturation,
+            "bad_action_clip": bad_action_clip,
+        }
+
+    def _update_quality_adaptive_wrench_scale_curriculum(self, env_ids):
+        if len(env_ids) == 0:
+            self._reset_curriculum_log_tensors()
+            return
+
+        current_iteration = self._get_wrench_curriculum_iteration()
+        up_threshold = float(self.wrench_cfg.get("quality_episode_length_up_threshold", self.config.rewards.get("force_scale_up_threshold", 210)))
+        down_threshold = float(
+            self.wrench_cfg.get("quality_episode_length_down_threshold", self.config.rewards.get("force_scale_down_threshold", 200))
+        )
+        metrics = self._wrench_quality_metrics(env_ids, up_threshold, down_threshold)
+
+        up_mask = metrics["good_episode_length"] & metrics["good_quality"]
+        down_mask = metrics["bad_episode_length"] | metrics["bad_quality"]
+        hold_mask = ~(up_mask | down_mask)
+
+        self.curriculum_bad_quality_fraction = metrics["bad_quality"].float().mean()
+        self.curriculum_bad_upper_tracking_fraction = metrics["bad_upper_tracking"].float().mean()
+        self.curriculum_bad_episode_length_fraction = metrics["bad_episode_length"].float().mean()
+        self.curriculum_bad_base_height_fraction = metrics["bad_base_height"].float().mean()
+        self.curriculum_bad_lin_vel_y_fraction = metrics["bad_lin_vel_y"].float().mean()
+        self.curriculum_bad_torque_saturation_fraction = metrics["bad_torque_saturation"].float().mean()
+        self.curriculum_bad_action_clip_fraction = metrics["bad_action_clip"].float().mean()
+
+        warm_start_torque = bool(self.wrench_cfg.get("warm_start_torque_finetune", False))
+
+        force_up = float(
+            self.wrench_cfg.get("quality_force_scale_up", self.wrench_cfg.get("force_scale_up", 0.005))
+        )
+        force_down = float(
+            self.wrench_cfg.get(
+                "quality_force_scale_down",
+                max(float(self.wrench_cfg.get("force_scale_down", 0.005)), force_up * 2.0),
+            )
+        )
+        torque_up = float(
+            self.wrench_cfg.get("quality_torque_scale_up", self.wrench_cfg.get("torque_scale_up", 0.002))
+        )
+        torque_down = float(
+            self.wrench_cfg.get(
+                "quality_torque_scale_down",
+                max(float(self.wrench_cfg.get("torque_scale_down", 0.002)), torque_up * 2.0),
+            )
+        )
+
+        if force_down <= force_up:
+            force_down = force_up * 2.0
+        if torque_down <= torque_up:
+            torque_down = torque_up * 2.0
+
+        force_mode_mask = self._force_mode_mask(env_ids).squeeze(-1).bool()
+        torque_mode_mask = self._torque_mode_mask(env_ids).squeeze(-1).bool()
+        force_update_ids = env_ids[torch.where(force_mode_mask)[0]]
+        torque_update_ids = env_ids[torch.where(torque_mode_mask)[0]]
+
+        force_up_ids = env_ids[torch.where(force_mode_mask & up_mask)[0]]
+        force_down_ids = env_ids[torch.where(force_mode_mask & down_mask)[0]]
+        force_hold_ids = env_ids[torch.where(force_mode_mask & hold_mask)[0]]
+        torque_up_ids = env_ids[torch.where(torque_mode_mask & up_mask)[0]]
+        torque_down_ids = env_ids[torch.where(torque_mode_mask & down_mask)[0]]
+        torque_hold_ids = env_ids[torch.where(torque_mode_mask & hold_mask)[0]]
+
+        if warm_start_torque and bool(self.wrench_cfg.get("warm_start_fix_force_scale", True)):
+            fixed_force_scale = float(self.wrench_cfg.get("warm_start_force_scale_fixed", 0.20))
+            force_min = float(self.wrench_cfg.get("warm_start_force_scale_min", fixed_force_scale))
+            force_max = float(self.wrench_cfg.get("warm_start_force_scale_max", fixed_force_scale))
+            fixed_force_scale = max(force_min, min(force_max, fixed_force_scale))
+            self.apply_force_scale[env_ids] = fixed_force_scale
+            force_up_ids = env_ids.new_empty((0,), dtype=torch.long)
+            force_down_ids = env_ids.new_empty((0,), dtype=torch.long)
+            force_hold_ids = force_update_ids
+        else:
+            self.apply_force_scale[force_up_ids] += force_up
+            self.apply_force_scale[force_down_ids] -= force_down
+
+            force_min = float(self.wrench_cfg.get("force_scale_min", 0.0))
+            force_max = float(self.wrench_cfg.get("force_scale_max", 1.0))
+            if str(self.wrench_cfg.get("curriculum_mode", "adaptive")) == "quality_adaptive":
+                force_min = max(force_min, float(self.wrench_cfg.get("force_scale_min_after_warmup", force_min)))
+            self.apply_force_scale[force_update_ids] = torch.clip(
+                self.apply_force_scale[force_update_ids],
+                force_min,
+                force_max,
+            )
+
+        if len(torque_update_ids) > 0:
+            torque_ready = (
+                self.apply_force_scale[torque_update_ids]
+                >= float(self.wrench_cfg.get("torque_scale_start_after_force_scale", 0.0))
+            ).squeeze(-1)
+            ready_torque_update_ids = torque_update_ids[torch.where(torque_ready)[0]]
+            ready_up_ids = torque_up_ids[
+                torch.where(
+                    (
+                        self.apply_force_scale[torque_up_ids]
+                        >= float(self.wrench_cfg.get("torque_scale_start_after_force_scale", 0.0))
+                    ).squeeze(-1)
+                )[0]
+            ]
+            ready_down_ids = torque_down_ids[
+                torch.where(
+                    (
+                        self.apply_force_scale[torque_down_ids]
+                        >= float(self.wrench_cfg.get("torque_scale_start_after_force_scale", 0.0))
+                    ).squeeze(-1)
+                )[0]
+            ]
+
+            self.apply_torque_scale[ready_up_ids] += torque_up
+            self.apply_torque_scale[ready_down_ids] -= torque_down
+
+            if warm_start_torque:
+                torque_min = float(self.wrench_cfg.get("warm_start_torque_scale_min", 0.0))
+            else:
+                torque_min = float(self.wrench_cfg.get("torque_scale_min_after_warmup", self.wrench_cfg.get("torque_scale_min", 0.0)))
+                torque_warmup_iterations = int(self.wrench_cfg.get("torque_curriculum_warmup_iterations", 0))
+                if current_iteration < torque_warmup_iterations:
+                    torque_min = max(torque_min, float(self.wrench_cfg.get("torque_scale_floor_during_warmup", torque_min)))
+            torque_max = float(self.wrench_cfg.get("torque_scale_max", 1.0))
+            self.apply_torque_scale[ready_torque_update_ids] = torch.clip(
+                self.apply_torque_scale[ready_torque_update_ids],
+                torque_min,
+                torque_max,
+            )
+
+        denom = max(len(env_ids), 1)
+        self.curriculum_force_up_fraction = torch.tensor(
+            float(len(force_up_ids)) / denom, dtype=torch.float, device=self.device
+        )
+        self.curriculum_force_down_fraction = torch.tensor(
+            float(len(force_down_ids)) / denom, dtype=torch.float, device=self.device
+        )
+        self.curriculum_force_hold_fraction = torch.tensor(
+            float(len(force_hold_ids)) / denom, dtype=torch.float, device=self.device
+        )
+        self.curriculum_torque_up_fraction = torch.tensor(
+            float(len(torque_up_ids)) / denom, dtype=torch.float, device=self.device
+        )
+        self.curriculum_torque_down_fraction = torch.tensor(
+            float(len(torque_down_ids)) / denom, dtype=torch.float, device=self.device
+        )
+        self.curriculum_torque_hold_fraction = torch.tensor(
+            float(len(torque_hold_ids)) / denom, dtype=torch.float, device=self.device
+        )
+
     def _get_wrench_curriculum_iteration(self):
         # The env does not receive PPO's iteration index directly. For this
         # isolated 6D-wrench path, estimate it from rollout steps; current PPO
@@ -595,6 +874,12 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
 
         self.log_dict["apply_force_scale"] = torch.mean(self.apply_force_scale.detach())
         self.log_dict["apply_torque_scale"] = torch.mean(self.effective_torque_scale.detach())
+        self.log_dict["apply_force_scale_p10"] = self._quantile(self.apply_force_scale.detach(), 0.10)
+        self.log_dict["apply_force_scale_p50"] = self._quantile(self.apply_force_scale.detach(), 0.50)
+        self.log_dict["apply_force_scale_p90"] = self._quantile(self.apply_force_scale.detach(), 0.90)
+        self.log_dict["apply_torque_scale_p10"] = self._quantile(self.effective_torque_scale.detach(), 0.10)
+        self.log_dict["apply_torque_scale_p50"] = self._quantile(self.effective_torque_scale.detach(), 0.50)
+        self.log_dict["apply_torque_scale_p90"] = self._quantile(self.effective_torque_scale.detach(), 0.90)
         self.log_dict["force_norm_mean"] = torch.mean(force_norm.detach())
         self.log_dict["force_norm_max"] = torch.max(force_norm.detach())
         self.log_dict["torque_norm_mean"] = torch.mean(torque_norm.detach())
@@ -606,8 +891,38 @@ class LeggedRobotDecoupledLocomotionStanceHeightWBC6DWrench(
         self.log_dict["wrench_mode"] = torch.tensor(
             float(self.WRENCH_MODES[self.wrench_mode]), dtype=torch.float, device=self.device
         )
+        mode_ids = self.env_wrench_mode_ids.detach()
+        self.log_dict["wrench_mode_none_fraction"] = torch.mean((mode_ids == self.WRENCH_MODES["none"]).float())
+        self.log_dict["wrench_mode_force_only_fraction"] = torch.mean(
+            (mode_ids == self.WRENCH_MODES["force_only"]).float()
+        )
+        self.log_dict["wrench_mode_torque_only_fraction"] = torch.mean(
+            (mode_ids == self.WRENCH_MODES["torque_only"]).float()
+        )
+        self.log_dict["wrench_mode_force_torque_fraction"] = torch.mean(
+            (mode_ids == self.WRENCH_MODES["force_torque"]).float()
+        )
+        self.log_dict["force_curriculum_up_fraction"] = self.curriculum_force_up_fraction
+        self.log_dict["force_curriculum_down_fraction"] = self.curriculum_force_down_fraction
+        self.log_dict["force_curriculum_hold_fraction"] = self.curriculum_force_hold_fraction
+        self.log_dict["torque_curriculum_up_fraction"] = self.curriculum_torque_up_fraction
+        self.log_dict["torque_curriculum_down_fraction"] = self.curriculum_torque_down_fraction
+        self.log_dict["torque_curriculum_hold_fraction"] = self.curriculum_torque_hold_fraction
+        self.log_dict["curriculum_bad_quality_fraction"] = self.curriculum_bad_quality_fraction
+        self.log_dict["curriculum_bad_upper_tracking_fraction"] = self.curriculum_bad_upper_tracking_fraction
+        self.log_dict["curriculum_bad_episode_length_fraction"] = self.curriculum_bad_episode_length_fraction
+        self.log_dict["curriculum_bad_base_height_fraction"] = self.curriculum_bad_base_height_fraction
+        self.log_dict["curriculum_bad_lin_vel_y_fraction"] = self.curriculum_bad_lin_vel_y_fraction
+        self.log_dict["curriculum_bad_torque_saturation_fraction"] = self.curriculum_bad_torque_saturation_fraction
+        self.log_dict["curriculum_bad_action_clip_fraction"] = self.curriculum_bad_action_clip_fraction
         self.log_dict["reset_rate"] = torch.mean(self.reset_buf.float())
         self.log_dict["upper_body_torque_saturation_ratio"] = torch.mean(upper_saturation.float())
+
+    def _quantile(self, value, q):
+        flat = value.reshape(-1)
+        if flat.numel() == 0:
+            return torch.tensor(0.0, dtype=torch.float, device=self.device)
+        return torch.quantile(flat, torch.tensor(float(q), dtype=torch.float, device=self.device))
 
     def _reward_tracking_upper_body_dofs(self):
         upper_body_pos = self.simulator.dof_pos[:, self.upper_dof_indices]

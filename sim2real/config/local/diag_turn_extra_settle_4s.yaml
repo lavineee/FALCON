@@ -1,0 +1,5 @@
+# Local diagnostic overlay: allow more active closed-loop turn time before
+# entering hold. Use with fast/short exit overlays so angle convergence happens
+# during TURN_VALVE rather than by dragging through TURN_HOLD/DONE.
+
+valve_turn_extra_settle_s: 4.0

@@ -305,6 +305,170 @@ class SimStatusGraspGeometryProvider:
         }
 
 
+class RealVisionGraspGeometryProvider:
+    """Read real-robot valve geometry JSON and expose the existing geom dict shape."""
+
+    def __init__(self, status_file, timeout_s=0.5, fail_fast_required_fields=False):
+        self.status_file = status_file
+        self.timeout_s = float(timeout_s)
+        self.fail_fast_required_fields = bool(fail_fast_required_fields)
+        self.last_error = ""
+
+    def _reject(self, reason, required_field_error=False):
+        self.last_error = str(reason)
+        if self.fail_fast_required_fields and required_field_error:
+            raise RuntimeError(f"real vision geometry invalid: {self.last_error}")
+        return None
+
+    def read(self):
+        if not self.status_file or not os.path.exists(self.status_file):
+            return self._reject("status_file_missing")
+        try:
+            with open(self.status_file, "r") as file:
+                status = json.load(file)
+        except Exception as exc:
+            return self._reject(f"json_parse_failed:{type(exc).__name__}:{exc}")
+
+        try:
+            source_timestamp = float(status["timestamp"])
+            timestamp = float(status.get("receiver_timestamp", source_timestamp))
+        except Exception as exc:
+            return self._reject(f"timestamp_missing_or_invalid:{type(exc).__name__}:{exc}")
+        if self.timeout_s >= 0.0 and time.time() - timestamp > self.timeout_s:
+            age_s = time.time() - timestamp
+            return self._reject(f"vision_stale:age_s={age_s:.3f}>timeout_s={self.timeout_s:.3f}")
+
+        frame = str(status.get("frame", "base")).strip().lower()
+        if frame != "base":
+            return self._reject(f"unsupported_frame:{frame}", required_field_error=True)
+        if not bool(status.get("valid", False)):
+            return self._reject("valid_false")
+        if not bool(status.get("pose_valid", status.get("valid", False))):
+            return self._reject("pose_valid_false")
+        if not bool(status.get("grasp_valid", status.get("valid", False))):
+            return self._reject("grasp_valid_false")
+
+        try:
+            center_base = _array3_or_raise(status.get("center_base"), "center_base")
+            grasp_base = _array3_or_raise(status.get("grasp_base"), "grasp_base")
+            axis_base = _array3_or_raise(status.get("axis_base"), "axis_base")
+            axis_base = axis_base / (np.linalg.norm(axis_base) + 1e-9)
+            if np.linalg.norm(axis_base) < 1e-8:
+                return self._reject("axis_base norm is too small", required_field_error=True)
+        except Exception as exc:
+            return self._reject(
+                f"required_field_invalid:{type(exc).__name__}:{exc}",
+                required_field_error=True,
+            )
+        self.last_error = ""
+
+        quality = status.get("quality", {})
+        if not isinstance(quality, dict):
+            quality = {}
+        for quality_key in (
+            "center_num_points",
+            "spoke_num_points",
+            "grasp_num_points",
+            "plane_aux_num_points",
+            "plane_fit_error_m",
+        ):
+            if quality_key in status:
+                quality.setdefault(quality_key, status[quality_key])
+        wheel_pos_base = center_base
+        if status.get("wheel_pos_base", None) is not None:
+            try:
+                wheel_pos_base = _array3_or_raise(status["wheel_pos_base"], "wheel_pos_base")
+            except Exception:
+                wheel_pos_base = center_base
+
+        wheel_R_base = np.eye(3)
+        if status.get("wheel_R_base", None) is not None:
+            try:
+                wheel_R_base = _rot3_or_raise(status["wheel_R_base"], "wheel_R_base")
+            except Exception:
+                wheel_R_base = np.eye(3)
+
+        result = {
+            "timestamp": timestamp,
+            "vision_timestamp": source_timestamp,
+            # Phase-1 real_vision compatibility layer: all *_world fields are
+            # synthetic and intentionally use base-as-world until a real base
+            # estimator/world frame is wired into the deployment stack.
+            "base_pos_world": np.zeros(3, dtype=float),
+            "base_xmat_world": np.eye(3, dtype=float),
+            "world_to_base": np.eye(3, dtype=float),
+            "center_world": center_base.copy(),
+            "grasp_world": grasp_base.copy(),
+            "axis_world": axis_base.copy(),
+            "wheel_pos_world": wheel_pos_base.copy(),
+            "wheel_xmat_world": wheel_R_base.copy(),
+            "center_base": center_base,
+            "grasp_base": grasp_base,
+            "axis_base": axis_base,
+            "wheel_pos_base": wheel_pos_base,
+            "valve_angle": 0.0,
+            "valve_vel": 0.0,
+            "angle_valid": False,
+            "vision_angle_valid": False,
+            "vision_valve_angle": None,
+            "vision_valve_vel": None,
+            "valid": True,
+            "vision_valid": True,
+            "pose_valid": bool(status.get("pose_valid", True)),
+            "grasp_valid": bool(status.get("grasp_valid", True)),
+            "grasp_latched": bool(status.get("grasp_latched", False)),
+            "plane_aux_valid": bool(status.get("plane_aux_valid", False)),
+            "quality": quality,
+            "geometry_source_used": "real_vision",
+            "vision_used_for_control": True,
+            "vision_control_block_reason": "",
+            "vision_quality_pass": True,
+            "vision_temporal_outlier": False,
+            "vision_smoothing_applied": False,
+            "vision_grasp_point_semantics": str(
+                status.get("vision_grasp_point_semantics", status.get("grasp_point_semantics", "raw_site"))
+            ),
+            "vision_use_grasp_R_base": bool(status.get("vision_use_grasp_R_base", False)),
+            "grasp_base_is_effective": bool(status.get("grasp_base_is_effective", False)),
+            "grasp_R_source": "computed",
+            "source": status.get("source", "real_vision"),
+            "receiver_timestamp": status.get("receiver_timestamp", None),
+            "debug_contact_pairs": [],
+            "debug_geom_world": {},
+            "contact_count": 0,
+            "contact_normal_force": 0.0,
+            "contact_pairs": [],
+            "contact_role_counts": {},
+            "contact_role_forces": {},
+            "real_contact_count": 0,
+            "real_contact_normal_force": 0.0,
+            "real_contact_pairs": [],
+            "real_contact_role_counts": {},
+            "real_contact_role_forces": {},
+            "feet_contact_stable": True,
+            "left_foot_force": 0.0,
+            "right_foot_force": 0.0,
+            "root_lin_vel_world": np.zeros(3, dtype=float),
+            "root_ang_vel_world": np.zeros(3, dtype=float),
+        }
+        if status.get("spoke_dir_base", None) is not None:
+            try:
+                spoke_dir = _array3_or_raise(status["spoke_dir_base"], "spoke_dir_base")
+                spoke_dir = spoke_dir - np.dot(spoke_dir, axis_base) * axis_base
+                result["spoke_dir_base"] = _normalize_or_none(spoke_dir)
+            except Exception:
+                pass
+        if status.get("grasp_R_base", None) is not None:
+            try:
+                result["grasp_R_base"] = _rot3_or_raise(status["grasp_R_base"], "grasp_R_base")
+                result["grasp_R_source"] = "vision"
+            except Exception:
+                pass
+        if status.get("wheel_R_base", None) is not None:
+            result["wheel_R_base"] = wheel_R_base.copy()
+        return result
+
+
 class VisionOverlayGraspGeometryProvider:
     """Overlay valve geometry from a vision status JSON onto complete MuJoCo GT status."""
 
@@ -1108,6 +1272,30 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 self.sim_status_file,
                 timeout_s=self.status_timeout_s,
             )
+        elif self.valve_geometry_source in ("real_vision", "vision_json"):
+            self.geometry_provider = RealVisionGraspGeometryProvider(
+                self.config.get(
+                    "real_vision_status_file",
+                    self.config.get(
+                        "vision_status_file",
+                        "/tmp/falcon_real_valve_vision_status.json",
+                    ),
+                ),
+                timeout_s=self.config.get("real_vision_timeout_s", self.config.get("vision_timeout_s", 0.5)),
+                fail_fast_required_fields=self.config.get("real_vision_fail_fast_required_fields", False),
+            )
+            self.geometry_provider.override_states = {
+                self.WAIT_TASK_POSE,
+                self.MOVE_PREGRASP,
+                self.APPROACH_GRASP,
+            }
+            self.logger.info(
+                colored(
+                    "[VALVE_GRASP] geometry source=real_vision "
+                    f"status_file={self.geometry_provider.status_file}",
+                    "cyan",
+                )
+            )
         elif self.valve_geometry_source in ("vision_overlay_debug", "vision_overlay"):
             gt_provider = SimStatusGraspGeometryProvider(
                 self.sim_status_file,
@@ -1248,6 +1436,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             np.clip(self.config.get("valve_hold_actual_to_desired_blend", 0.0), 0.0, 1.0)
         )
         self.close_max_s = float(self.config.get("valve_close_max_s", max(self.close_wait_s, 4.0)))
+        self.stop_after_approach = bool(self.config.get("valve_stop_after_approach", False))
         self.hold_entry_min_success_s = float(self.config.get("valve_hold_entry_min_success_s", 0.0))
         self.hold_entry_max_abs_valve_vel = float(self.config.get("valve_hold_entry_max_abs_valve_vel", float("inf")))
         self.enter_hold_on_close_timeout = bool(self.config.get("valve_enter_hold_on_close_timeout", True))
@@ -1641,6 +1830,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self.summary_file = f"{root}_summary.jsonl" if root else f"{self.log_file}_summary.jsonl"
         self._task_ready_t = None
         self._latest_geom = None
+        self._next_geometry_wait_log_t = 0.0
         self._current_target_base = np.array([self.EE_right_x, self.EE_right_y, self.EE_right_z], dtype=float)
         self._close_command_sent = False
         self._success_reported = False
@@ -1899,6 +2089,10 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             self._close_success_started_t = None
             self._functional_grasp_candidate_started_t = None
             self._close_exit_reason = ""
+        if state in (self.MOVE_PREGRASP, self.APPROACH_GRASP):
+            self._write_hand_state("open")
+        if state in (self.HOLD_GRASP, self.PRE_TURN_SETTLE, self.TURN_VALVE, self.TURN_HOLD):
+            self._hold_hand_state()
         if state == self.TURN_HOLD:
             # 到目标角附近后应停止追加圆弧运动；实机上对应“保持当前手端位置”。
             if self._turn_hold_command_delta_deg is None:
@@ -1910,6 +2104,8 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
                 # MuJoCo 里抓握/摩擦不足时，目标附近需要一个有限力矩制动项吸收阀门残余角速度。
                 hold_target = self._turn_start_angle + float(np.deg2rad(self.turn_target_deg))
                 self._write_valve_angle_hold(True, hold_target)
+        if state in (self.DONE, self.FAILED):
+            self._write_hand_state("open")
         self.logger.info(colored(f"[VALVE_GRASP] state -> {state}", "cyan"))
         if state == self.DONE:
             self._write_overall_summary(overall_result="done")
@@ -2156,7 +2352,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         geom["grasp_R_source"] = self._latched_grasp_R_source or "computed"
         for key, value in self._close_latch_diagnostics.items():
             geom[key] = value.copy() if hasattr(value, "copy") else value
-        if self._latched_geometry_source == "vision_overlay":
+        if self._is_vision_geometry_source(self._latched_geometry_source):
             geom["geometry_source_used"] = "vision_latched"
             geom["vision_used_for_control"] = True
         elif self._latched_geometry_source == "gt":
@@ -2165,7 +2361,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         if isinstance(debug, dict):
             debug = dict(debug)
             debug["latched_geometry_source"] = self._latched_geometry_source
-            if self._latched_geometry_source == "vision_overlay":
+            if self._is_vision_geometry_source(self._latched_geometry_source):
                 debug["geometry_source_used"] = "vision_latched"
                 debug["vision_used_for_control"] = True
                 debug["vision_control_block_reason"] = "close_latched_geometry"
@@ -2591,7 +2787,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         geometry_source_used = self._geom_geometry_source_used(geom)
         if (
             self.task_state in override_states
-            and geometry_source_used == "vision_overlay"
+            and self._is_vision_geometry_source(geometry_source_used)
             and self._geom_field_bool(geom, "vision_used_for_control")
             and self._geom_field_bool(geom, "vision_quality_pass")
         ):
@@ -2871,7 +3067,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             )
             if vision_fresh:
                 latch_geom = prev_vision_control_geom
-                latched_source = "vision_overlay"
+                latched_source = self._control_geometry_source(prev_vision_control_geom)
                 close_latch_reason = "last_accepted_vision_control_geom"
                 latched_from_last_accepted_vision_control_geom = True
                 latched_from_current_geom = False
@@ -2914,7 +3110,7 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
         self._close_latched_world_geom = self._close_latch_world_snapshot_from_geom(actual_latch_geom)
         if self._close_latched_world_geom is None:
             self._close_latched_world_geom = selected_world_latch
-        self._latched_geometry_source = "vision_overlay" if str(latched_source).startswith("vision") else "gt"
+        self._latched_geometry_source = latched_source if self._is_vision_geometry_source(latched_source) else "gt"
         self._latched_grasp_R_source = str(
             (self._close_latched_world_geom or selected_world_latch or {}).get("grasp_R_source", grasp_R_source)
         ).strip() or grasp_R_source
@@ -2948,6 +3144,9 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             )
         )
         return self._close_latched_geom(geom if self.vision_close_latch_frame == "world" else latch_geom)
+
+    def _is_vision_geometry_source(self, source):
+        return str(source or "").strip() in ("vision_overlay", "real_vision", "vision_latched")
 
     def _control_geometry_source(self, geom):
         if not geom:
@@ -4290,6 +4489,11 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             geom = self._latest_geom
 
         if geom is None:
+            now = time.perf_counter()
+            if now >= self._next_geometry_wait_log_t:
+                self._next_geometry_wait_log_t = now + 1.0
+                reason = getattr(self.geometry_provider, "last_error", "") or "no geometry"
+                self.logger.info(colored(f"[VALVE_GRASP] waiting geometry: {reason}", "yellow"))
             self._enter_state(self.WAIT_GEOMETRY)
             return
 
@@ -4350,6 +4554,17 @@ class LocoManipValveGraspContact7DofWithHandPolicy(LocoManipEETracking7DofWithHa
             if self._ready_to_close(geom, grasp_error) or (
                 self.approach_max_s > 0.0 and time.perf_counter() - self._state_enter_t >= self.approach_max_s
             ):
+                if self.stop_after_approach:
+                    self._write_hand_state("open")
+                    self._set_grasp_target(self._ee_grasp_target_base(geom), geom)
+                    self.logger.info(
+                        colored(
+                            "[VALVE_GRASP] valve_stop_after_approach=true; holding approach target without close",
+                            "cyan",
+                        )
+                    )
+                    self._enter_state(self.DONE)
+                    return
                 geom = self._latch_close_grasp_frame(
                     geom,
                     prev_control_geom=prev_control_geom,

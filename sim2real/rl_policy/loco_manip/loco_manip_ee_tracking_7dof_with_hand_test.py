@@ -14,6 +14,7 @@ from sim2real.rl_policy.loco_manip.loco_manip_ee_tracking_7dof_test import (
     _parse_range,
     apply_named_motor_gain_scales,
 )
+from sim2real.utils.hand_controller import create_hand_controller
 from sim2real.utils.arm_ik.robot_arm_ik_with_hand import G1_29_WithHandArmIK
 
 
@@ -78,19 +79,64 @@ class LocoManipEETracking7DofWithHandTestPolicy(LocoManipEETracking7DofTestPolic
 
     def __init__(self, *args, hand_close_error_m=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.hand_controller = create_hand_controller(
+            self.config,
+            sim_control_writer=self._write_control_file,
+            extra_payload_fn=self._hand_control_extra_payload,
+            logger=self.logger,
+            initialize_dds=bool(self.config.get("inspire_initialize_channel_factory", False)),
+        )
         self.hand_close_error_m = float(
             self.config.get("hand_close_error_m", 0.035) if hand_close_error_m is None else hand_close_error_m
         )
         self._right_hand_closed_for_target = False
         self._write_hand_state("open")
 
-    def _write_hand_state(self, state):
-        payload = {
-            "right_hand_state": state,
-            "timestamp": time.time(),
-            "target_id": int(self._target_id),
+    def _hand_control_extra_payload(self):
+        return {
+            "target_id": int(getattr(self, "_target_id", -1)),
         }
-        self._write_control_file(payload)
+
+    def _write_hand_state(self, state):
+        if not hasattr(self, "hand_controller"):
+            self._write_control_file(
+                {
+                    "right_hand_state": state,
+                    "timestamp": time.time(),
+                    "target_id": int(getattr(self, "_target_id", -1)),
+                }
+            )
+            return
+        if state == "open":
+            self.hand_controller.open()
+        elif state == "close":
+            self.hand_controller.close()
+        else:
+            raise ValueError(f"unsupported hand state: {state}")
+
+    def _hold_hand_state(self):
+        if hasattr(self, "hand_controller"):
+            self.hand_controller.hold()
+
+    def _shutdown_hand_controller(self, open_first=True):
+        controller = getattr(self, "hand_controller", None)
+        if controller is None:
+            return
+        try:
+            if open_first:
+                controller.open(force=True)
+        except Exception as exc:
+            self.logger.warning(f"[HAND] failed to send open during shutdown: {exc}")
+        try:
+            controller.shutdown()
+        except Exception as exc:
+            self.logger.warning(f"[HAND] failed to shutdown hand controller: {exc}")
+
+    def run(self):
+        try:
+            super().run()
+        finally:
+            self._shutdown_hand_controller(open_first=True)
 
     def _maybe_resample_target(self):
         old_target_id = self._target_id

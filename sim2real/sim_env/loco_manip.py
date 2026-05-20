@@ -66,8 +66,9 @@ class LocoManipSimulator(BaseSimulator):
         self.valve_dof = -1
         self.valve_qadr = -1
 
-        # live plot
-        self.enable_live_plot = bool(config.get("enable_live_plot", True)) and plt is not None
+        # live plot is opt-in to keep deployment/sim runs from opening an extra
+        # matplotlib process unless explicitly requested.
+        self.enable_live_plot = bool(config.get("enable_live_plot", False)) and plt is not None
         self.plot_maxlen = 400
         self.plot_push_every = 1
         self.plot_counter = 0

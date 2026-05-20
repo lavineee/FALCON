@@ -66,6 +66,46 @@ env:
       fixed_force_scale: 0.10
       fixed_torque_scale: 0.05
 
+      # Optional per-env ablation mixture. Disabled by default to preserve the
+      # legacy global wrench.mode behavior.
+      per_env_mode_mixture:
+        enabled: false
+        probabilities:
+          none: 0.10
+          force_only: 0.35
+          torque_only: 0.25
+          force_torque: 0.30
+
+      # Quality-aware curriculum, used when curriculum_mode=quality_adaptive.
+      # Scale-up requires good episode length and good tracking/safety metrics.
+      quality_episode_length_up_threshold: 210
+      quality_episode_length_down_threshold: 200
+      quality_upper_tracking_good_threshold: 0.70
+      quality_upper_tracking_bad_threshold: 0.50
+      quality_base_height_good_threshold: 0.70
+      quality_base_height_bad_threshold: 0.50
+      quality_lin_vel_y_good_threshold: 0.60
+      quality_lin_vel_y_bad_threshold: 0.40
+      quality_torque_saturation_good_max: 0.04
+      quality_torque_saturation_bad_max: 0.08
+      quality_action_clip_good_max: 0.01
+      quality_action_clip_bad_max: 0.05
+      quality_force_scale_up: 0.005
+      quality_force_scale_down: 0.015
+      quality_torque_scale_up: 0.002
+      quality_torque_scale_down: 0.006
+
+      # Warm-start torque fine-tune path for force-adaptive checkpoints.
+      # Force can be held inside a known-stable range while torque grows only
+      # when the quality gate stays healthy.
+      warm_start_torque_finetune: false
+      warm_start_fix_force_scale: true
+      warm_start_force_scale_fixed: 0.20
+      warm_start_force_scale_min: 0.15
+      warm_start_force_scale_max: 0.25
+      warm_start_torque_scale_initial: 0.0
+      warm_start_torque_scale_min: 0.0
+
       force_scale_initial: 0.1
       force_scale_min: 0.0
       force_scale_max: 1.0

@@ -1,0 +1,44 @@
+# Real G1 valve approach overlay. Apply after the grasp-contact overlay.
+# Phase 1 only consumes center_base/grasp_base/axis_base from real vision.
+
+valve_geometry_source: "real_vision"
+real_vision_status_file: "/tmp/falcon_real_valve_vision_status.json"
+real_vision_timeout_s: 0.5
+vision_status_file: "/tmp/falcon_real_valve_vision_status.json"
+vision_timeout_s: 0.5
+
+# Phase-1 safety: approach the marker target and stop before hand closing.
+valve_stop_after_approach: true
+valve_enable_turn: false
+valve_turn_target_deg: 0.0
+valve_task_pose_gate_enabled: false
+valve_freeze_grasp_world_after_start: false
+valve_latch_grasp_frame_on_close: false
+valve_hold_target_mode: "base"
+valve_contact_assist_enabled: false
+vision_use_quality_gate: false
+
+# Avoid MuJoCo-only angle/constraint paths on real hardware.
+valve_pre_turn_angle_lock_enabled: false
+valve_pre_turn_angle_hold_enabled: false
+valve_angle_lock_enabled: false
+valve_angle_hold_enabled: false
+valve_contact_tracking_compensation_enabled: false
+valve_approach_proxy_compensation_gain: 0.0
+valve_approach_proxy_compensation_max_m: 0.0
+valve_contact_close_min_contacts: 999
+valve_close_on_contact: false
+valve_require_palm_contact_to_close: false
+valve_close_require_real_hand_contact: false
+
+# Marker receiver quality fields may be sparse in phase 1; keep gates off until
+# the real vision node reports stable center/spoke/grasp point counts.
+vision_min_center_points: 0
+vision_min_spoke_points: 0
+vision_min_grasp_points: 0
+vision_min_plane_aux_points: 0
+vision_max_plane_fit_error_m: 1.0
+
+# Keep the robot at the final approach pose briefly, then let the policy stop.
+valve_hold_s: 2.0
+valve_stop_after_done_s: 2.0

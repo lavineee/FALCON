@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SESSION="${SESSION:-falcon_clean_700g}"
+REPO="${REPO:-$PWD}"
+CONDA_ENV="${CONDA_ENV:-fcgym}"
+NUM_ENVS="${NUM_ENVS:-4096}"
+ITERATIONS="${ITERATIONS:-10000}"
+SEED="${SEED:-1}"
+PROJECT_NAME="${PROJECT_NAME:-g1_29dof_falcon_fakehand700g}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-clean_falcon_fakehand700g_${NUM_ENVS}env_${ITERATIONS}it_seed${SEED}}"
+USE_WANDB="${USE_WANDB:-True}"
+HEADLESS="${HEADLESS:-True}"
+LOGURU_LEVEL="${LOGURU_LEVEL:-INFO}"
+
+if [[ "${1:-}" != "--inside-tmux" ]]; then
+  if tmux has-session -t "${SESSION}" 2>/dev/null; then
+    echo "tmux session already exists: ${SESSION}" >&2
+    echo "Attach with: tmux attach -t ${SESSION}" >&2
+    exit 2
+  fi
+  echo "Starting tmux session: ${SESSION}"
+  tmux new-session -d -s "${SESSION}" "cd '${REPO}' && '${REPO}/tools/server_training/run_clean_falcon_fakehand700g_tmux' --inside-tmux"
+  echo "Attach with: tmux attach -t ${SESSION}"
+  exit 0
+fi
+
+cd "${REPO}"
+
+ROBOT_CONFIG="humanoidverse/config/robot/g1/g1_29dof_waist_fakehand_700g.yaml"
+ROBOT_ASSET="humanoidverse/data/robots/g1/g1_29dof_fakehand_700g.urdf"
+
+if [[ ! -f "${ROBOT_CONFIG}" ]]; then
+  echo "Robot config not found: ${ROBOT_CONFIG}" >&2
+  exit 2
+fi
+
+if [[ ! -f "${ROBOT_ASSET}" ]]; then
+  echo "Robot asset not found: ${ROBOT_ASSET}" >&2
+  exit 2
+fi
+
+if command -v conda >/dev/null 2>&1; then
+  eval "$(conda shell.bash hook)"
+  conda activate "${CONDA_ENV}"
+else
+  echo "conda command not found; assuming Python environment is already active."
+fi
+
+export LOGURU_LEVEL
+
+echo "Repository: ${REPO}"
+echo "Session: ${SESSION}"
+echo "Robot config: ${ROBOT_CONFIG}"
+echo "Robot asset: ${ROBOT_ASSET}"
+echo "num_envs=${NUM_ENVS}, iterations=${ITERATIONS}, seed=${SEED}"
+echo "project_name=${PROJECT_NAME}"
+echo "experiment_name=${EXPERIMENT_NAME}"
+
+python humanoidverse/train_agent.py \
+  +exp=decoupled_locomotion_stand_height_waist_wbc_diff_force_ma_ppo_ma_env \
+  +simulator=isaacgym \
+  +domain_rand=domain_rand_rl_gym \
+  +rewards=dec_loco/reward_dec_loco_stand_height_ma_diff_force \
+  +robot=g1/g1_29dof_waist_fakehand_700g \
+  +terrain=terrain_locomotion_plane \
+  +obs=dec_loco/g1_29dof_obs_diff_force_history_wolinvel_ma \
+  +opt=wandb \
+  "project_name=${PROJECT_NAME}" \
+  "experiment_name=${EXPERIMENT_NAME}" \
+  "num_envs=${NUM_ENVS}" \
+  "headless=${HEADLESS}" \
+  "use_wandb=${USE_WANDB}" \
+  "seed=${SEED}" \
+  "obs.add_noise=True" \
+  "env.config.fix_upper_body_prob=0.3" \
+  "robot.dof_effort_limit_scale=0.9" \
+  "rewards.reward_initial_penalty_scale=0.1" \
+  "rewards.reward_penalty_degree=0.0001" \
+  "algo.config.num_learning_iterations=${ITERATIONS}"

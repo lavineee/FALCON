@@ -1,0 +1,5 @@
+# Local diagnostic overlay: require each turn segment to get closer to target
+# before entering hold. Useful for segmented large-angle tests where per-segment
+# residual error accumulates.
+
+valve_turn_tolerance_deg: 0.6

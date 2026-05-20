@@ -1,0 +1,3 @@
+# Local diagnostic overlay: only change turn radius source to actual contact.
+
+valve_turn_radius_mode: "actual"

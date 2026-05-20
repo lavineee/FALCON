@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VARIANT="${VARIANT:-posture_stability}"
+REPO="${REPO:-$PWD}"
+CONDA_ENV="${CONDA_ENV:-fcgym}"
+CHECKPOINT="${CHECKPOINT:-${REPO}/checkpoints/fakehand700g_iter10000/model_10000.pt}"
+NUM_ENVS="${NUM_ENVS:-512}"
+NUM_ITERATIONS="${NUM_ITERATIONS:-${ITERATIONS:-200}}"
+SEED="${SEED:-1}"
+USE_WANDB="${USE_WANDB:-False}"
+HEADLESS="${HEADLESS:-True}"
+DRY_RUN="${DRY_RUN:-0}"
+LOGURU_LEVEL="${LOGURU_LEVEL:-INFO}"
+
+case "${VARIANT}" in
+  posture_stability)
+    REWARDS_CONFIG="dec_loco/reward_dec_loco_stand_height_ma_diff_force_ft_posture_stability"
+    DOMAIN_RAND_CONFIG="domain_rand_rl_gym"
+    ROBOT_CONFIG="g1/g1_29dof_waist_fakehand_700g"
+    PROJECT_NAME="${PROJECT_NAME:-g1_29dof_falcon_fakehand700g_ft_posture_stability}"
+    EXPERIMENT_NAME="${EXPERIMENT_NAME:-fakehand700g_ft_posture_stability_${NUM_ENVS}env_${NUM_ITERATIONS}it_seed${SEED}}"
+    ;;
+  hand_mass_rand)
+    REWARDS_CONFIG="dec_loco/reward_dec_loco_stand_height_ma_diff_force"
+    DOMAIN_RAND_CONFIG="domain_rand_rl_gym_hand_mass_rand"
+    ROBOT_CONFIG="g1/g1_29dof_waist_fakehand_700g_hand_mass_rand"
+    PROJECT_NAME="${PROJECT_NAME:-g1_29dof_falcon_fakehand700g_ft_hand_mass_rand}"
+    EXPERIMENT_NAME="${EXPERIMENT_NAME:-fakehand700g_ft_hand_mass_rand_${NUM_ENVS}env_${NUM_ITERATIONS}it_seed${SEED}}"
+    ;;
+  posture_plus_mass_rand)
+    REWARDS_CONFIG="dec_loco/reward_dec_loco_stand_height_ma_diff_force_ft_posture_stability"
+    DOMAIN_RAND_CONFIG="domain_rand_rl_gym_hand_mass_rand"
+    ROBOT_CONFIG="g1/g1_29dof_waist_fakehand_700g_hand_mass_rand"
+    PROJECT_NAME="${PROJECT_NAME:-g1_29dof_falcon_fakehand700g_ft_posture_plus_mass_rand}"
+    EXPERIMENT_NAME="${EXPERIMENT_NAME:-fakehand700g_ft_posture_plus_mass_rand_${NUM_ENVS}env_${NUM_ITERATIONS}it_seed${SEED}}"
+    ;;
+  *)
+    echo "Unsupported VARIANT=${VARIANT}" >&2
+    echo "Expected one of: posture_stability, hand_mass_rand, posture_plus_mass_rand" >&2
+    exit 2
+    ;;
+esac
+
+SESSION="${SESSION:-fakehand700g_ft_${VARIANT}_${NUM_ENVS}x${NUM_ITERATIONS}_seed${SEED}}"
+
+CMD=(
+  python humanoidverse/train_agent.py
+  +exp=decoupled_locomotion_stand_height_waist_wbc_diff_force_ma_ppo_ma_env
+  +simulator=isaacgym
+  "+domain_rand=${DOMAIN_RAND_CONFIG}"
+  "+rewards=${REWARDS_CONFIG}"
+  "+robot=${ROBOT_CONFIG}"
+  +terrain=terrain_locomotion_plane
+  +obs=dec_loco/g1_29dof_obs_diff_force_history_wolinvel_ma
+  +opt=wandb
+  "project_name=${PROJECT_NAME}"
+  "experiment_name=${EXPERIMENT_NAME}"
+  "num_envs=${NUM_ENVS}"
+  "seed=${SEED}"
+  "headless=${HEADLESS}"
+  "use_wandb=${USE_WANDB}"
+  "algo.config.num_learning_iterations=${NUM_ITERATIONS}"
+  "algo.config.save_interval=${SAVE_INTERVAL:-50}"
+  "++algo.config.warm_start.enabled=True"
+  "++algo.config.warm_start.checkpoint_path='${CHECKPOINT}'"
+  "++algo.config.warm_start.load_actors=True"
+  "++algo.config.warm_start.load_critics=False"
+  "++algo.config.warm_start.load_optimizer=False"
+  "++algo.config.warm_start.strict_actor_shape=True"
+)
+
+print_plan() {
+  echo "Repository: ${REPO}"
+  echo "Session: ${SESSION}"
+  echo "Variant: ${VARIANT}"
+  echo "Checkpoint: ${CHECKPOINT}"
+  echo "Project: ${PROJECT_NAME}"
+  echo "Experiment: ${EXPERIMENT_NAME}"
+  echo "num_envs=${NUM_ENVS}, iterations=${NUM_ITERATIONS}, seed=${SEED}"
+  echo "rewards=${REWARDS_CONFIG}"
+  echo "domain_rand=${DOMAIN_RAND_CONFIG}"
+  echo "robot=${ROBOT_CONFIG}"
+  echo
+  printf '%q ' "${CMD[@]}"
+  echo
+}
+
+if [[ "${DRY_RUN}" == "1" ]]; then
+  print_plan
+  exit 0
+fi
+
+if [[ "${1:-}" != "--inside-tmux" ]]; then
+  if tmux has-session -t "${SESSION}" 2>/dev/null; then
+    echo "tmux session already exists: ${SESSION}" >&2
+    echo "Attach with: tmux attach -t ${SESSION}" >&2
+    exit 2
+  fi
+  echo "Starting tmux session: ${SESSION}"
+  tmux new-session -d -s "${SESSION}" "cd '${REPO}' && '${REPO}/tools/server_training/run_fakehand700g_finetune_tmux' --inside-tmux"
+  echo "Attach with: tmux attach -t ${SESSION}"
+  exit 0
+fi
+
+cd "${REPO}"
+
+if [[ ! -f "${CHECKPOINT}" ]]; then
+  echo "Checkpoint not found: ${CHECKPOINT}" >&2
+  exit 2
+fi
+
+if command -v conda >/dev/null 2>&1; then
+  eval "$(conda shell.bash hook)"
+  conda activate "${CONDA_ENV}"
+else
+  echo "conda command not found; assuming Python environment is already active."
+fi
+
+export LOGURU_LEVEL
+print_plan
+exec "${CMD[@]}"

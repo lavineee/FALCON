@@ -1,0 +1,34 @@
+# Phase-1 real valve approach overlay.
+# Assumption: a right-hand external dexterous hand is controlled only through DDS.
+
+runtime_mode: real
+
+hand_backend: inspire_dds
+hand_role: real_right_hand
+inspire_hand_side: right
+inspire_dds_channel: 0
+inspire_network_interface: enp0s31f6
+inspire_open_raw: [900, 900, 900, 900, 900, 600]
+inspire_close_raw: [350, 350, 350, 350, 420, 600]
+
+valve_geometry_source: real_vision
+real_vision_status_file: /tmp/falcon_real_valve_vision_status.json
+real_vision_timeout_s: 0.5
+real_vision_freeze_after_close: true
+
+# First real runner phase: stop after HOLD_GRASP because turn is disabled.
+# No real valve-angle feedback or contact-force feedback is used.
+valve_enable_turn: false
+valve_close_wait_s: 1.0
+valve_close_max_s: 1.2
+valve_enter_hold_on_close_timeout: true
+valve_hold_s: 2.0
+valve_stop_after_done_s: 1.0
+
+use_sim_status_file: false
+use_sim_control_file: false
+use_mujoco_weld: false
+use_sim_contact_force: false
+use_sim_valve_angle_truth: false
+use_sim_completion_flag: false
+allow_manual_geometry_fallback: false

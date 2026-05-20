@@ -1,0 +1,6 @@
+# Local diagnostic overlay: hold at the actual valve angle reached at turn_hold.
+# Purpose: avoid continuing to push with a closed-loop lead command after the
+# target is reached, while still giving the valve a short stabilization window.
+
+valve_turn_hold_command_mode: "actual"
+valve_stop_after_done_s: 0.0

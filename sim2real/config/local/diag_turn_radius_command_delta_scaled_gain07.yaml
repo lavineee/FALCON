@@ -1,0 +1,6 @@
+# Local diagnostic overlay: relative tangential displacement with smaller
+# motion radius. This reduces hand target travel for large-angle turns and
+# tests whether less kinematic pulling can still rotate the valve.
+
+valve_turn_radius_mode: "command_delta_scaled"
+valve_turn_displacement_radius_gain: 0.7

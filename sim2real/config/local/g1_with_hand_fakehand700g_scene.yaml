@@ -1,0 +1,3 @@
+# Overlay for MuJoCo-only fakehand700g deployment checks.
+# Load after the normal with-hand tracking / valve overlays.
+ROBOT_SCENE: "../humanoidverse/data/robots/g1/scene_g1_29dof_freebase_with_hand_valve_ribbed_round_grip_contact_fakehand700g.xml"
