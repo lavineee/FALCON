@@ -1,0 +1,54 @@
+{
+  "roi_xywh": null,
+  "candidate_sources": ["shape"],
+  "max_plane_points": 2500,
+  "max_outer_points": 1200,
+  "plane_ransac_iterations": 100,
+  "circle_ransac_iterations": 200,
+  "shape_max_candidates": 12,
+  "shape_use_clahe": false,
+  "shape_min_axis_px": 140,
+  "shape_max_aspect_ratio": 2.8,
+  "shape_hough_enabled": true,
+  "shape_hough_param2": 18.0,
+  "shape_hough_min_dist_px": 140.0,
+  "shape_hough_band_thickness_px": 14,
+  "shape_hough_max_candidates": 10,
+  "radius_range_m": [0.08, 0.35],
+  "depth_validation": {
+    "min_valid_depth_ratio": 0.4,
+    "max_contour_depth_jump_ratio": 0.35,
+    "depth_jump_threshold_m": 0.05
+  },
+  "scoring": {
+    "normalize_scores": true,
+    "weights": {
+      "shape": 0.2,
+      "valid_depth": 0.1,
+      "depth_jump": 0.05,
+      "plane": 0.15,
+      "circle": 0.3,
+      "coverage": 0.2
+    }
+  },
+  "hard_gates": {
+    "min_valid_depth_ratio": 0.25,
+    "hard_max_circle_rmse_m": 0.05,
+    "hard_min_angular_coverage": 0.25
+  },
+  "geometry_quality": {
+    "max_plane_rmse_m": 0.02,
+    "min_plane_inlier_ratio": 0.45,
+    "max_circle_rmse_m": 0.025,
+    "min_circle_inlier_ratio": 0.45,
+    "min_angular_coverage": 0.45
+  },
+  "temporal_filter": {
+    "enabled": true,
+    "max_center_jump_m": 0.05,
+    "max_radius_jump_m": 0.02,
+    "max_axis_jump_deg": 15.0,
+    "stable_frames_required": 3,
+    "latch_last_valid_sec": 0.5
+  }
+}
